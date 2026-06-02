@@ -1,5 +1,7 @@
 const STORAGE_KEY = "vk-winner-mini-app:v1";
 const AUTOFILL_SEED_PREFIX = "seed:";
+const VK_APP_ID = 54544038;
+const VK_IMPORT_SCOPE = "wall,groups";
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
@@ -162,12 +164,7 @@ function bindEvents() {
     els.spamWords,
   ].forEach((node) => node.addEventListener("input", persistAndRefresh));
 
-  [els.postUrl, els.importScanDepth].forEach((node) => {
-    node.addEventListener("input", () => {
-      persistAndRefresh();
-      scheduleAutoImport();
-    });
-  });
+  [els.postUrl, els.importScanDepth].forEach((node) => node.addEventListener("input", persistAndRefresh));
 
   els.participants.addEventListener("input", () => {
     demoMode = false;
@@ -206,8 +203,8 @@ function bindEvents() {
     flashButton(els.copyReport, "Скопировано");
   });
 
-  els.drawWinners.addEventListener("click", () => {
-    recomputeAndRender();
+  els.drawWinners.addEventListener("click", async () => {
+    await importFromVk();
     els.winnersList.scrollIntoView({ behavior: "smooth", block: "start" });
   });
 
@@ -256,7 +253,6 @@ function handleModeChange(event) {
     allBox.checked = actionBoxes.every((box) => box.checked);
   }
   persistAndRefresh();
-  scheduleAutoImport(0);
 }
 
 function persistAndRefresh() {
@@ -298,9 +294,7 @@ async function checkImportServer(silent = false) {
     const tokenText = pieces.length ? pieces.join(" + ") : "токены не заданы";
     const extra = payload.repostImportAvailable ? "" : " · repost нужен live user token";
     setApiStatus(payload.ready ? `Proxy готов · ${tokenText}${extra}` : `Proxy без токенов · ${tokenText}${extra}`);
-    if (payload.ready && collectState().postUrl) {
-      scheduleAutoImport(0);
-    } else if (!payload.ready && !silent) {
+    if (!payload.ready && !silent) {
       setApiStatus("Proxy не готов. Запусти `node server.js`.");
     }
     return payload;
@@ -322,20 +316,11 @@ async function importFromVk() {
   const requestSeq = ++importRequestSeq;
 
   try {
-    const response = await fetch("/api/import", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        postUrl: state.postUrl,
-        entryModes: state.entryModes,
-        scanDepth: state.importScanDepth,
-      }),
-    });
-
-    const payload = await response.json();
-    if (!response.ok || payload.error) {
-      throw new Error(payload.error || `HTTP ${response.status}`);
-    }
+    const userToken = await requestVkUserToken();
+    const payload = userToken
+      ? await importFromVkBridge(state, userToken).catch(() => importFromServer(state, userToken))
+      : await importFromServer(state, "");
+    if (payload.error) throw new Error(payload.error);
     if (requestSeq !== importRequestSeq) return;
 
     demoMode = false;
@@ -347,6 +332,147 @@ async function importFromVk() {
     if (requestSeq !== importRequestSeq) return;
     setApiStatus(`Импорт не удался: ${String(error).replace(/^Error:\s*/, "")}`);
   }
+}
+
+async function requestVkUserToken() {
+  const bridge = window.vkBridge;
+  if (!bridge || typeof bridge.send !== "function") return "";
+
+  try {
+    const payload = await bridge.send("VKWebAppGetAuthToken", {
+      app_id: VK_APP_ID,
+      scope: VK_IMPORT_SCOPE,
+    });
+    return String(payload?.access_token || "");
+  } catch {
+    return "";
+  }
+}
+
+async function importFromServer(state, userToken) {
+  const response = await fetch("/api/import", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      postUrl: state.postUrl,
+      entryModes: state.entryModes,
+      scanDepth: state.importScanDepth,
+      userToken,
+    }),
+  });
+  const payload = await response.json();
+  if (!response.ok || payload.error) {
+    throw new Error(payload.error || `HTTP ${response.status}`);
+  }
+  return payload;
+}
+
+async function importFromVkBridge(state, userToken) {
+  const parsed = parseWallUrl(state.postUrl);
+  if (!parsed) throw new Error("Не удалось распознать ссылку на пост VK.");
+
+  const actionMap = new Map();
+  const modes = state.entryModes.includes("all") ? ["repost", "comment", "like"] : state.entryModes;
+
+  if (modes.includes("repost")) {
+    const ids = await paginateVkBridgeIds((offset, count) =>
+      vkApiCall("likes.getList", {
+        type: "post",
+        owner_id: parsed.ownerId,
+        item_id: parsed.postId,
+        filter: "copies",
+        count,
+        offset,
+      }, userToken),
+    );
+    ids.forEach((id) => ensureActionRow(actionMap, id).repost = true);
+  }
+
+  if (modes.includes("comment")) {
+    const ids = await paginateVkBridgeIds(async (offset) => {
+      const data = await vkApiCall("wall.getComments", {
+        owner_id: parsed.ownerId,
+        post_id: parsed.postId,
+        count: 100,
+        offset,
+        sort: "desc",
+      }, userToken);
+      return (data.items || [])
+        .map((comment) => comment.from_id)
+        .filter((id) => Number.isInteger(id) && id > 0);
+    }, 100);
+    ids.forEach((id) => ensureActionRow(actionMap, id).comment = true);
+  }
+
+  if (modes.includes("like")) {
+    const ids = await paginateVkBridgeIds((offset, count) =>
+      vkApiCall("likes.getList", {
+        type: "post",
+        owner_id: parsed.ownerId,
+        item_id: parsed.postId,
+        filter: "likes",
+        count,
+        offset,
+      }, userToken),
+    );
+    ids.forEach((id) => ensureActionRow(actionMap, id).like = true);
+  }
+
+  const actionRows = Array.from(actionMap.entries()).map(([id, actions]) => ({ id, actions }));
+  const response = await fetch("/api/enrich", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      postUrl: state.postUrl,
+      entryModes: state.entryModes,
+      scanDepth: state.importScanDepth,
+      actionRows,
+    }),
+  });
+  const payload = await response.json();
+  if (!response.ok || payload.error) {
+    throw new Error(payload.error || `HTTP ${response.status}`);
+  }
+  return payload;
+}
+
+async function vkApiCall(method, params, userToken) {
+  const payload = await window.vkBridge.send("VKWebAppCallAPIMethod", {
+    method,
+    params: {
+      ...params,
+      access_token: userToken,
+      v: "5.199",
+    },
+  });
+  return payload.response;
+}
+
+async function paginateVkBridgeIds(fetchPage, pageSize = 1000) {
+  const results = [];
+  let offset = 0;
+  while (true) {
+    const data = await fetchPage(offset, pageSize);
+    const page = Array.isArray(data) ? data : data.items || [];
+    if (!page.length) break;
+    results.push(...page);
+    if (page.length < pageSize) break;
+    offset += pageSize;
+  }
+  return Array.from(new Set(results.filter((id) => Number.isInteger(id) && id > 0)));
+}
+
+function ensureActionRow(map, id) {
+  if (!map.has(id)) {
+    map.set(id, { repost: false, comment: false, like: false });
+  }
+  return map.get(id);
+}
+
+function parseWallUrl(url) {
+  const match = String(url || "").match(/wall(-?\d+)_([0-9]+)/i);
+  if (!match) return null;
+  return { ownerId: Number(match[1]), postId: Number(match[2]) };
 }
 
 function setApiStatus(text) {

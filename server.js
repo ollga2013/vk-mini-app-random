@@ -3,6 +3,7 @@ const fs = require("fs/promises");
 const fsSync = require("fs");
 const path = require("path");
 const { URL } = require("url");
+const { AsyncLocalStorage } = require("async_hooks");
 
 const ROOT_DIR = __dirname;
 loadEnvFile(path.join(ROOT_DIR, ".env.local"));
@@ -14,6 +15,7 @@ const USER_TOKEN = String(process.env.VK_USER_TOKEN || process.env.VK_TOKEN || "
 const SERVICE_TOKEN = String(process.env.VK_SERVICE_TOKEN || "").trim();
 const DEFAULT_SCAN_DEPTH = clampInt(process.env.VK_IMPORT_SCAN_DEPTH, 10, 200, 60);
 const MAX_CONCURRENT = 6;
+const vkTokenContext = new AsyncLocalStorage();
 let tokenDiagnosticsPromise = null;
 
 const CONTEST_KEYS = [
@@ -103,7 +105,20 @@ async function handleRequest(req, res) {
       const postUrl = String(body.postUrl || "").trim();
       const entryModes = Array.isArray(body.entryModes) ? body.entryModes : ["repost"];
       const scanDepth = clampInt(body.scanDepth, 10, 200, DEFAULT_SCAN_DEPTH);
-      const result = await importParticipants({ postUrl, entryModes, scanDepth });
+      const requestUserToken = String(body.userToken || "").trim();
+      const tokens = Array.from(new Set([requestUserToken, USER_TOKEN, SERVICE_TOKEN].filter(Boolean)));
+      const result = await withVkTokens(tokens, () => importParticipants({ postUrl, entryModes, scanDepth, requestUserToken }));
+      sendJson(res, 200, result);
+      return;
+    }
+
+    if (pathname === "/api/enrich" && req.method === "POST") {
+      const body = await readJson(req);
+      const postUrl = String(body.postUrl || "").trim();
+      const entryModes = Array.isArray(body.entryModes) ? body.entryModes : ["repost"];
+      const scanDepth = clampInt(body.scanDepth, 10, 200, DEFAULT_SCAN_DEPTH);
+      const actionRows = Array.isArray(body.actionRows) ? body.actionRows : [];
+      const result = await enrichParticipants({ postUrl, entryModes, scanDepth, actionRows });
       sendJson(res, 200, result);
       return;
     }
@@ -157,7 +172,7 @@ async function serveStatic(pathname, res) {
   }
 }
 
-async function importParticipants({ postUrl, entryModes, scanDepth }) {
+async function importParticipants({ postUrl, entryModes, scanDepth, requestUserToken }) {
   const parsed = parseWallUrl(postUrl);
   if (!parsed) {
     return { error: "Не удалось распознать ссылку на пост VK." };
@@ -166,8 +181,66 @@ async function importParticipants({ postUrl, entryModes, scanDepth }) {
   const ownerId = parsed.ownerId;
   const postId = parsed.postId;
   const selectedModes = normalizeModes(entryModes);
-  const tokenDiagnostics = await getTokenDiagnostics();
+  const envTokenDiagnostics = await getTokenDiagnostics();
+  const requestUserTokenValid = await validateToken(requestUserToken);
+  const requestRepostAccess = selectedModes.includes("repost")
+    ? await validateRepostAccess(requestUserToken, ownerId, postId)
+    : requestUserTokenValid;
+  const envRepostAccess = selectedModes.includes("repost")
+    ? await validateRepostAccess(USER_TOKEN, ownerId, postId)
+    : envTokenDiagnostics.userTokenValid;
+  const hasRepostAccess = requestRepostAccess || envRepostAccess;
   const sourceMaps = await collectSourceMaps(ownerId, postId, selectedModes);
+  return buildParticipants({
+    postUrl,
+    ownerId,
+    postId,
+    selectedModes,
+    sourceMaps,
+    scanDepth,
+    meta: {
+      repostImportAvailable: hasRepostAccess,
+      liveUserTokenUsed: requestUserTokenValid,
+      liveUserRepostAccess: requestRepostAccess,
+      note:
+        selectedModes.includes("repost") && !hasRepostAccess
+          ? "Для репостов нужен живой user token с wall-правами. Сейчас repost-часть недоступна."
+          : undefined,
+    },
+  });
+}
+
+async function enrichParticipants({ postUrl, entryModes, scanDepth, actionRows }) {
+  const parsed = parseWallUrl(postUrl);
+  if (!parsed) {
+    return { error: "Не удалось распознать ссылку на пост VK." };
+  }
+
+  const sourceMaps = new Map();
+  for (const row of actionRows) {
+    const id = Number(row?.id);
+    if (!Number.isInteger(id) || id <= 0) continue;
+    const entry = ensureAction(sourceMaps, id);
+    entry.repost = Boolean(row.actions?.repost);
+    entry.comment = Boolean(row.actions?.comment);
+    entry.like = Boolean(row.actions?.like);
+  }
+
+  return buildParticipants({
+    postUrl,
+    ownerId: parsed.ownerId,
+    postId: parsed.postId,
+    selectedModes: normalizeModes(entryModes),
+    sourceMaps,
+    scanDepth,
+    meta: {
+      clientBridgeImport: true,
+      repostImportAvailable: true,
+    },
+  });
+}
+
+async function buildParticipants({ postUrl, ownerId, postId, selectedModes, sourceMaps, scanDepth, meta = {} }) {
   const ids = Array.from(sourceMaps.keys());
 
   if (!ids.length) {
@@ -218,15 +291,10 @@ async function importParticipants({ postUrl, entryModes, scanDepth }) {
       ownerId,
       postId,
       selectedModes,
-      repostImportAvailable: tokenDiagnostics.userTokenValid,
       importedCount: participants.length,
       scanDepth,
-      userTokenUsed: Boolean(USER_TOKEN),
-      serviceTokenUsed: !USER_TOKEN && Boolean(SERVICE_TOKEN),
-      note:
-        selectedModes.includes("repost") && !tokenDiagnostics.userTokenValid
-          ? "Для репостов нужен живой user token с wall-правами. Сейчас repost-часть недоступна."
-          : undefined,
+      serviceTokenUsed: Boolean(SERVICE_TOKEN),
+      ...meta,
     },
   };
 }
@@ -326,7 +394,10 @@ async function fetchLikers(ownerId, postId) {
 }
 
 async function fetchCommenters(ownerId, postId) {
-  return paginateIds(async (offset, count) => {
+  const results = [];
+  let offset = 0;
+  const count = 100;
+  while (true) {
     const data = await vkCall("wall.getComments", {
       owner_id: ownerId,
       post_id: postId,
@@ -335,10 +406,15 @@ async function fetchCommenters(ownerId, postId) {
       sort: "desc",
     });
     const items = data.items || [];
-    return items
-      .map((comment) => comment.from_id)
-      .filter((id) => Number.isInteger(id) && id > 0);
-  });
+    results.push(
+      ...items
+        .map((comment) => comment.from_id)
+        .filter((id) => Number.isInteger(id) && id > 0),
+    );
+    if (items.length < count) break;
+    offset += count;
+  }
+  return uniqPositive(results);
 }
 
 function extractRepostOwnerIds(response) {
@@ -516,7 +592,8 @@ function uniqPositive(items) {
 }
 
 async function vkCall(method, params = {}) {
-  const tokens = Array.from(new Set([USER_TOKEN, SERVICE_TOKEN].filter(Boolean)));
+  const contextTokens = vkTokenContext.getStore();
+  const tokens = Array.from(new Set((contextTokens?.length ? contextTokens : [USER_TOKEN, SERVICE_TOKEN]).filter(Boolean)));
   if (!tokens.length) {
     throw new Error("VK tokens are not configured.");
   }
@@ -533,8 +610,7 @@ async function vkCall(method, params = {}) {
 }
 
 async function vkCallWithToken(method, params = {}, token) {
-  const tokens = Array.from(new Set([USER_TOKEN, SERVICE_TOKEN].filter(Boolean)));
-  if (!token || !tokens.includes(token)) {
+  if (!token) {
     throw new Error("VK tokens are not configured.");
   }
 
@@ -558,6 +634,10 @@ async function vkCallWithToken(method, params = {}, token) {
   throw new Error(`${method}: ${payload.error.error_msg || "VK API error"}`);
 }
 
+function withVkTokens(tokens, fn) {
+  return vkTokenContext.run(tokens, fn);
+}
+
 async function getTokenDiagnostics() {
   if (tokenDiagnosticsPromise) return tokenDiagnosticsPromise;
   tokenDiagnosticsPromise = (async () => {
@@ -574,6 +654,27 @@ async function validateToken(token) {
   if (!token) return false;
   try {
     await vkCallWithToken("users.get", { user_ids: 1 }, token);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function validateRepostAccess(token, ownerId, postId) {
+  if (!token) return false;
+  try {
+    await vkCallWithToken(
+      "likes.getList",
+      {
+        type: "post",
+        owner_id: ownerId,
+        item_id: postId,
+        filter: "copies",
+        count: 1,
+        offset: 0,
+      },
+      token,
+    );
     return true;
   } catch {
     return false;

@@ -155,12 +155,7 @@ h1 {
 }
 
 #load-demo,
-#draw-winners,
 #import-vk {
-  display: none;
-}
-
-#entry-mode {
   display: none;
 }
 
