@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Подведение итогов</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="bg-orb bg-orb-a"></div>
+    <div class="bg-orb bg-orb-b"></div>
+
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">VK Mini App</p>
+          <h1>Подведение итогов</h1>
+          <p class="lead">
+            Прозрачный розыгрыш с фильтрами против призоловов, несколькими победителями и
+            картинкой-отчетом для публикации.
+          </p>
+        </div>
+        <div class="topbar-actions">
+          <button class="ghost" id="load-demo">Демо</button>
+          <button class="ghost" id="copy-report">Скопировать отчет</button>
+          <button class="primary" id="draw-winners">Определить победителей</button>
+        </div>
+      </header>
+
+      <section class="grid">
+        <article class="panel">
+          <div class="panel-head">
+            <h2>Источник конкурса</h2>
+            <span class="subtle">На что идет розыгрыш</span>
+          </div>
+
+          <label class="field">
+            <span>Ссылка на пост</span>
+            <input
+              id="post-url"
+              type="url"
+              placeholder="https://vk.com/wall-123456_78"
+              autocomplete="off"
+            />
+          </label>
+
+          <div class="choice-row" id="entry-mode">
+            <label class="chip"><input type="checkbox" value="repost" checked /> Репост</label>
+            <label class="chip"><input type="checkbox" value="comment" /> Комментарий</label>
+            <label class="chip"><input type="checkbox" value="like" /> Лайк</label>
+            <label class="chip"><input type="checkbox" value="all" /> Все вместе</label>
+          </div>
+
+          <div class="toggle-row">
+            <label class="toggle">
+              <input id="pinned-post" type="checkbox" checked />
+              <span>
+                <strong>Пост закреплен</strong>
+                <small>Отмечается в отчете и картинке результата</small>
+              </span>
+            </label>
+          </div>
+
+          <div class="two-col">
+            <label class="field">
+              <span>Победителей</span>
+              <input id="winners-count" type="number" min="1" max="100" value="3" />
+            </label>
+            <label class="field">
+              <span>Seed</span>
+              <input id="draw-seed" type="text" placeholder="например 2026-06-02" />
+            </label>
+          </div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head">
+            <h2>Анти-призоловы</h2>
+            <span class="subtle">Фильтры можно включать точечно</span>
+          </div>
+
+          <div class="filters" id="filters">
+            <label class="toggle">
+              <input type="checkbox" data-filter="requireAvatar" checked />
+              <span><strong>Только с аватаром</strong><small>Без пустых профилей</small></span>
+            </label>
+            <label class="toggle">
+              <input type="checkbox" data-filter="requireGroupMember" checked />
+              <span><strong>Подписка на сообщество</strong><small>Если конкурс внутри группы</small></span>
+            </label>
+            <label class="toggle">
+              <input type="checkbox" data-filter="excludeCommunities" checked />
+              <span><strong>Исключать сообщества</strong><small>Только живые профили</small></span>
+            </label>
+            <label class="toggle">
+              <input type="checkbox" data-filter="excludePrivate" />
+              <span><strong>Не пускать закрытые профили</strong><small>Когда важна открытая проверка</small></span>
+            </label>
+          </div>
+
+          <div class="two-col compact">
+            <label class="field">
+              <span>Минимум друзей</span>
+              <input id="min-friends" type="number" min="0" value="30" />
+            </label>
+            <label class="field">
+              <span>Возраст аккаунта, дней</span>
+              <input id="min-age" type="number" min="0" value="60" />
+            </label>
+          </div>
+
+          <div class="two-col compact">
+            <label class="field">
+              <span>Макс. конкурсов на стене</span>
+              <input id="max-contests" type="number" min="0" value="3" />
+            </label>
+            <label class="field">
+              <span>Макс. доля репостов</span>
+              <input id="max-repost-share" type="number" min="0" max="1" step="0.05" value="0.9" />
+            </label>
+          </div>
+
+          <label class="field">
+            <span>Спам-слова, через запятую</span>
+            <textarea id="spam-words" rows="3">конкурс, розыгрыш, giveaway, приз, репост, акция, выиграй</textarea>
+          </label>
+        </article>
+
+        <article class="panel panel-wide import-panel">
+          <div class="panel-head">
+            <h2>Живой импорт из VK</h2>
+            <span class="subtle" id="vk-api-status">Проверяю сервер...</span>
+          </div>
+
+          <div class="import-grid">
+            <div class="import-copy">
+              <p>Сбор участников через локальный proxy или free backend. Токены живут на сервере, в браузер не уходят.</p>
+              <p class="muted">Импорт подтянет репосты, комментарии, лайки и профильные поля для прозрачной жеребьёвки.</p>
+            </div>
+
+            <div class="two-col compact import-controls">
+              <label class="field">
+                <span>Скан стены, постов</span>
+                <input id="import-scan-depth" type="number" min="10" max="200" value="60" />
+              </label>
+              <div class="import-buttons">
+                <button class="ghost" id="check-import">Проверить сервер</button>
+                <button class="primary" id="import-vk">Импортировать из VK</button>
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <article class="panel panel-wide">
+          <div class="panel-head">
+            <h2>Участники</h2>
+            <span class="subtle">Пастите JSON или список строк</span>
+          </div>
+
+          <label class="field">
+            <span>
+              Формат: массив объектов JSON.
+              <span class="muted">Можно вставить и просто `id`, если нет расширенных полей.</span>
+            </span>
+            <textarea id="participants" rows="10" spellcheck="false" placeholder='[{"id":123,"name":"Анна","avatarUrl":"https://...","actions":{"repost":true,"comment":true,"like":true},"member":true,"friends":128,"ageDays":780,"wallContestCount":1,"repostShare":0.12,"isCommunity":false,"isPrivate":false}]'></textarea>
+          </label>
+
+          <div class="mini-actions">
+            <button class="ghost" id="use-sample">Вставить пример</button>
+            <button class="ghost" id="clear-participants">Очистить</button>
+            <label class="file-button">
+              <input id="json-file" type="file" accept="application/json,.json" />
+              <span>Загрузить JSON</span>
+            </label>
+          </div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head">
+            <h2>Прозрачность</h2>
+            <span class="subtle">Что увидят участники</span>
+          </div>
+
+          <div class="stats">
+            <div>
+              <strong id="eligible-count">0</strong>
+              <span>допущено</span>
+            </div>
+            <div>
+              <strong id="excluded-count">0</strong>
+              <span>исключено</span>
+            </div>
+            <div>
+              <strong id="seed-preview">—</strong>
+              <span>seed</span>
+            </div>
+          </div>
+
+          <div class="report-box" id="report-preview">
+            Подготовьте список и нажмите «Определить победителей».
+          </div>
+
+          <div class="mini-actions">
+            <button class="ghost" id="download-report">Скачать текст</button>
+            <button class="ghost" id="download-json">Скачать JSON</button>
+            <button class="primary" id="download-image">Скачать картинку</button>
+          </div>
+        </article>
+
+        <article class="panel panel-wide">
+          <div class="panel-head">
+            <h2>Победители</h2>
+            <span class="subtle">В карточке есть фото и `id`</span>
+          </div>
+
+          <div class="winners" id="winners-list">
+            <div class="empty-state">Пока пусто.</div>
+          </div>
+        </article>
+
+        <article class="panel panel-wide">
+          <div class="panel-head">
+            <h2>Лог проверки</h2>
+            <span class="subtle">Причины исключения видны отдельно</span>
+          </div>
+          <div class="audit" id="audit-log"></div>
+        </article>
+      </section>
+    </main>
+
+    <canvas id="export-canvas" class="hidden"></canvas>
+    <script src="https://unpkg.com/@vkontakte/vk-bridge/dist/browser.min.js"></script>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

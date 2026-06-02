@@ -1,0 +1,11 @@
+{
+  "name": "vk-winner-mini-app",
+  "private": true,
+  "version": "1.0.0",
+  "homepage": "./",
+  "scripts": {
+    "start": "node server.js",
+    "serve": "node server.js",
+    "deploy": "vk-miniapps-deploy"
+  }
+}

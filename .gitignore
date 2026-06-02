@@ -1,0 +1,4 @@
+.env.local
+qa-*.png
+qa-*.webp
+node_modules/
