@@ -105,9 +105,10 @@ async function handleRequest(req, res) {
       const postUrl = String(body.postUrl || "").trim();
       const entryModes = Array.isArray(body.entryModes) ? body.entryModes : ["repost"];
       const scanDepth = clampInt(body.scanDepth, 10, 200, DEFAULT_SCAN_DEPTH);
+      const strictPrizeHunter = Boolean(body.strictPrizeHunter);
       const requestUserToken = String(body.userToken || "").trim();
       const tokens = Array.from(new Set([requestUserToken, USER_TOKEN, SERVICE_TOKEN].filter(Boolean)));
-      const result = await withVkTokens(tokens, () => importParticipants({ postUrl, entryModes, scanDepth, requestUserToken }));
+      const result = await withVkTokens(tokens, () => importParticipants({ postUrl, entryModes, scanDepth, strictPrizeHunter, requestUserToken }));
       sendJson(res, 200, result);
       return;
     }
@@ -117,8 +118,9 @@ async function handleRequest(req, res) {
       const postUrl = String(body.postUrl || "").trim();
       const entryModes = Array.isArray(body.entryModes) ? body.entryModes : ["repost"];
       const scanDepth = clampInt(body.scanDepth, 10, 200, DEFAULT_SCAN_DEPTH);
+      const strictPrizeHunter = Boolean(body.strictPrizeHunter);
       const actionRows = Array.isArray(body.actionRows) ? body.actionRows : [];
-      const result = await enrichParticipants({ postUrl, entryModes, scanDepth, actionRows });
+      const result = await enrichParticipants({ postUrl, entryModes, scanDepth, strictPrizeHunter, actionRows });
       sendJson(res, 200, result);
       return;
     }
@@ -172,7 +174,7 @@ async function serveStatic(pathname, res) {
   }
 }
 
-async function importParticipants({ postUrl, entryModes, scanDepth, requestUserToken }) {
+async function importParticipants({ postUrl, entryModes, scanDepth, strictPrizeHunter, requestUserToken }) {
   const parsed = parseWallUrl(postUrl);
   if (!parsed) {
     return { error: "Не удалось распознать ссылку на пост VK." };
@@ -198,6 +200,7 @@ async function importParticipants({ postUrl, entryModes, scanDepth, requestUserT
     selectedModes,
     sourceMaps,
     scanDepth,
+    strictPrizeHunter,
     meta: {
       repostImportAvailable: hasRepostAccess,
       liveUserTokenUsed: requestUserTokenValid,
@@ -210,7 +213,7 @@ async function importParticipants({ postUrl, entryModes, scanDepth, requestUserT
   });
 }
 
-async function enrichParticipants({ postUrl, entryModes, scanDepth, actionRows }) {
+async function enrichParticipants({ postUrl, entryModes, scanDepth, strictPrizeHunter, actionRows }) {
   const parsed = parseWallUrl(postUrl);
   if (!parsed) {
     return { error: "Не удалось распознать ссылку на пост VK." };
@@ -233,6 +236,7 @@ async function enrichParticipants({ postUrl, entryModes, scanDepth, actionRows }
     selectedModes: normalizeModes(entryModes),
     sourceMaps,
     scanDepth,
+    strictPrizeHunter,
     meta: {
       clientBridgeImport: true,
       repostImportAvailable: true,
@@ -240,7 +244,7 @@ async function enrichParticipants({ postUrl, entryModes, scanDepth, actionRows }
   });
 }
 
-async function buildParticipants({ postUrl, ownerId, postId, selectedModes, sourceMaps, scanDepth, meta = {} }) {
+async function buildParticipants({ postUrl, ownerId, postId, selectedModes, sourceMaps, scanDepth, strictPrizeHunter = false, meta = {} }) {
   const ids = Array.from(sourceMaps.keys());
 
   if (!ids.length) {
@@ -260,7 +264,7 @@ async function buildParticipants({ postUrl, ownerId, postId, selectedModes, sour
   const users = await getUsers(ids);
   const groupId = ownerId < 0 ? Math.abs(ownerId) : null;
   const memberMap = groupId ? await getMemberMap(groupId, ids) : new Map();
-  const wallMap = await getWallSignals(ids, scanDepth);
+  const wallMap = strictPrizeHunter ? await getWallSignals(ids, scanDepth) : new Map();
 
   const participants = users.map((user) => {
     const actionFlags = sourceMaps.get(user.id) || { repost: false, comment: false, like: false };
@@ -293,6 +297,7 @@ async function buildParticipants({ postUrl, ownerId, postId, selectedModes, sour
       selectedModes,
       importedCount: participants.length,
       scanDepth,
+      strictPrizeHunter,
       serviceTokenUsed: Boolean(SERVICE_TOKEN),
       ...meta,
     },

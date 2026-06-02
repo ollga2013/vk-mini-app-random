@@ -43,6 +43,7 @@
               autocomplete="off"
             />
           </label>
+          <span class="subtle status-line" id="vk-api-status">Готово к розыгрышу</span>
 
           <div class="choice-row" id="entry-mode">
             <label class="chip"><input type="checkbox" value="repost" checked /> Репост</label>
@@ -96,9 +97,13 @@
               <input type="checkbox" data-filter="excludePrivate" />
               <span><strong>Не пускать закрытые профили</strong><small>Когда важна открытая проверка</small></span>
             </label>
+            <label class="toggle">
+              <input type="checkbox" data-filter="strictPrizeHunter" />
+              <span><strong>Строгая проверка призоловов</strong><small>Медленнее: сканирует стены участников</small></span>
+            </label>
           </div>
 
-          <div class="two-col compact">
+          <div class="two-col compact anti-advanced">
             <label class="field">
               <span>Минимум друзей</span>
               <input id="min-friends" type="number" min="0" value="30" />
@@ -109,7 +114,7 @@
             </label>
           </div>
 
-          <div class="two-col compact">
+          <div class="two-col compact anti-advanced">
             <label class="field">
               <span>Макс. конкурсов на стене</span>
               <input id="max-contests" type="number" min="0" value="3" />
@@ -120,7 +125,7 @@
             </label>
           </div>
 
-          <label class="field">
+          <label class="field anti-advanced">
             <span>Спам-слова, через запятую</span>
             <textarea id="spam-words" rows="3">конкурс, розыгрыш, giveaway, приз, репост, акция, выиграй</textarea>
           </label>
@@ -129,7 +134,7 @@
         <article class="panel panel-wide import-panel">
           <div class="panel-head">
             <h2>Живой импорт из VK</h2>
-            <span class="subtle" id="vk-api-status">Проверяю сервер...</span>
+            <span class="subtle">Проверяю сервер...</span>
           </div>
 
           <div class="import-grid">
@@ -175,7 +180,7 @@
           </div>
         </article>
 
-        <article class="panel">
+        <article class="panel transparency-panel">
           <div class="panel-head">
             <h2>Прозрачность</h2>
             <span class="subtle">Что увидят участники</span>
@@ -203,7 +208,7 @@
           <div class="mini-actions">
             <button class="ghost" id="download-report">Скачать текст</button>
             <button class="ghost" id="download-json">Скачать JSON</button>
-            <button class="primary" id="download-image">Скачать картинку</button>
+            <button class="primary" id="download-image-old">Скачать картинку</button>
           </div>
         </article>
 
@@ -211,6 +216,7 @@
           <div class="panel-head">
             <h2>Победители</h2>
             <span class="subtle">В карточке есть фото и `id`</span>
+            <button class="ghost" id="download-image">Скачать картинку</button>
           </div>
 
           <div class="winners" id="winners-list">
@@ -218,7 +224,7 @@
           </div>
         </article>
 
-        <article class="panel panel-wide">
+        <article class="panel panel-wide audit-panel">
           <div class="panel-head">
             <h2>Лог проверки</h2>
             <span class="subtle">Причины исключения видны отдельно</span>

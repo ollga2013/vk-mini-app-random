@@ -1,7 +1,22 @@
-const STORAGE_KEY = "vk-winner-mini-app:v1";
+const STORAGE_KEY = "vk-winner-mini-app:v2";
 const AUTOFILL_SEED_PREFIX = "seed:";
 const VK_APP_ID = 54544038;
 const VK_IMPORT_SCOPE = "wall,groups";
+const VK_API_VERSION = "5.199";
+const LOCAL_API_HOSTS = new Set(["localhost", "127.0.0.1", ""]);
+const BRIDGE_CONTEST_KEYS = [
+  "конкурс",
+  "розыгрыш",
+  "выиграй",
+  "giveaway",
+  "приз",
+  "репост",
+  "акция",
+  "бесплатно",
+  "итоги",
+  "участвую",
+  "подарок",
+];
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
@@ -139,7 +154,11 @@ initBridge();
 bindEvents();
 hydrateState();
 recomputeAndRender();
-checkImportServer();
+if (canUseLocalApi()) {
+  checkImportServer();
+} else {
+  setApiStatus("VK Bridge готов. Открой приложение внутри VK и нажми «Подвести итоги».");
+}
 
 function initBridge() {
   const bridge = window.vkBridge;
@@ -282,6 +301,11 @@ function scheduleAutoImport(delay = 700) {
 }
 
 async function checkImportServer(silent = false) {
+  if (!canUseLocalApi()) {
+    importServerOk = false;
+    setApiStatus("Опубликованная версия работает через VK Bridge, без /api на GitHub Pages.");
+    return { ready: false, skipped: true };
+  }
   setApiStatus("Проверяю proxy...");
   try {
     const response = await fetch("/api/status");
@@ -318,7 +342,7 @@ async function importFromVk() {
   try {
     const userToken = await requestVkUserToken();
     const payload = userToken
-      ? await importFromVkBridge(state, userToken).catch(() => importFromServer(state, userToken))
+      ? await importFromVkBridge(state, userToken)
       : await importFromServer(state, "");
     if (payload.error) throw new Error(payload.error);
     if (requestSeq !== importRequestSeq) return;
@@ -339,17 +363,57 @@ async function requestVkUserToken() {
   if (!bridge || typeof bridge.send !== "function") return "";
 
   try {
-    const payload = await bridge.send("VKWebAppGetAuthToken", {
+    const authPayload = await withTimeout(bridge.send("VKWebAppGetAuthToken", {
       app_id: VK_APP_ID,
       scope: VK_IMPORT_SCOPE,
+    }), canUseLocalApi() ? 1500 : 12000, "VK Bridge не ответил. Открой приложение внутри VK.");
+    const grantedScopes = new Set(String(authPayload?.scope || "").split(",").map((scope) => scope.trim()));
+    if (!grantedScopes.has("wall")) {
+      throw new Error("VK не выдал доступ wall. Разреши доступ к стене, чтобы проверить репосты.");
+    }
+    return String(authPayload?.access_token || "");
+
+    const scopeCheck = await bridge.send("VKWebAppCheckAllowedScopes", {
+      scopes: VK_IMPORT_SCOPE,
+    });
+    const allowed = new Set((scopeCheck?.result || []).filter((item) => item.allowed).map((item) => item.scope));
+    if (!allowed.has("wall")) {
+      throw new Error("VK не дал доступ wall. Без него нельзя проверить репосты.");
+    }
+
+    const payload = await bridge.send("VKWebAppGetAuthToken", {
+      app_id: VK_APP_ID,
+      scope: ["wall", allowed.has("groups") ? "groups" : ""].filter(Boolean).join(","),
     });
     return String(payload?.access_token || "");
-  } catch {
+  } catch (error) {
+    if (!canUseLocalApi()) {
+      throw error;
+    }
     return "";
   }
 }
 
+function withTimeout(promise, timeoutMs, message) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+    promise
+      .then((value) => {
+        clearTimeout(timer);
+        resolve(value);
+      })
+      .catch((error) => {
+        clearTimeout(timer);
+        reject(error);
+      });
+  });
+}
+
 async function importFromServer(state, userToken) {
+  if (!canUseLocalApi()) {
+    throw new Error("Backend /api недоступен на GitHub Pages. Открой приложение внутри VK, чтобы импорт шел через VK Bridge.");
+  }
+
   const response = await fetch("/api/import", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -357,6 +421,7 @@ async function importFromServer(state, userToken) {
       postUrl: state.postUrl,
       entryModes: state.entryModes,
       scanDepth: state.importScanDepth,
+      strictPrizeHunter: Boolean(state.filters?.strictPrizeHunter),
       userToken,
     }),
   });
@@ -375,20 +440,13 @@ async function importFromVkBridge(state, userToken) {
   const modes = state.entryModes.includes("all") ? ["repost", "comment", "like"] : state.entryModes;
 
   if (modes.includes("repost")) {
-    const ids = await paginateVkBridgeIds((offset, count) =>
-      vkApiCall("likes.getList", {
-        type: "post",
-        owner_id: parsed.ownerId,
-        item_id: parsed.postId,
-        filter: "copies",
-        count,
-        offset,
-      }, userToken),
-    );
+    setApiStatus("Собираю репосты из VK...");
+    const ids = await getBridgeRepostIds(parsed, userToken);
     ids.forEach((id) => ensureActionRow(actionMap, id).repost = true);
   }
 
   if (modes.includes("comment")) {
+    setApiStatus("Собираю комментарии из VK...");
     const ids = await paginateVkBridgeIds(async (offset) => {
       const data = await vkApiCall("wall.getComments", {
         owner_id: parsed.ownerId,
@@ -405,6 +463,7 @@ async function importFromVkBridge(state, userToken) {
   }
 
   if (modes.includes("like")) {
+    setApiStatus("Собираю лайки из VK...");
     const ids = await paginateVkBridgeIds((offset, count) =>
       vkApiCall("likes.getList", {
         type: "post",
@@ -418,22 +477,233 @@ async function importFromVkBridge(state, userToken) {
     ids.forEach((id) => ensureActionRow(actionMap, id).like = true);
   }
 
-  const actionRows = Array.from(actionMap.entries()).map(([id, actions]) => ({ id, actions }));
-  const response = await fetch("/api/enrich", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      postUrl: state.postUrl,
-      entryModes: state.entryModes,
-      scanDepth: state.importScanDepth,
-      actionRows,
-    }),
+  return buildBridgeImportPayload({
+    state,
+    parsed,
+    actionMap,
+    selectedModes: modes,
+    userToken,
   });
-  const payload = await response.json();
-  if (!response.ok || payload.error) {
-    throw new Error(payload.error || `HTTP ${response.status}`);
+}
+
+function canUseLocalApi() {
+  return LOCAL_API_HOSTS.has(window.location.hostname);
+}
+
+async function buildBridgeImportPayload({ state, parsed, actionMap, selectedModes, userToken }) {
+  const ids = Array.from(actionMap.keys());
+  if (!ids.length) {
+    return {
+      participants: [],
+      meta: {
+        postUrl: state.postUrl,
+        ownerId: parsed.ownerId,
+        postId: parsed.postId,
+        selectedModes,
+        importedCount: 0,
+        clientBridgeImport: true,
+        note: "Участники по выбранным условиям не найдены.",
+      },
+    };
   }
-  return payload;
+
+  setApiStatus(`VK найдено ID: ${ids.length}. Загружаю профили...`);
+  const users = await getBridgeUsers(ids, userToken);
+  const groupId = parsed.ownerId < 0 ? Math.abs(parsed.ownerId) : null;
+  const memberMap = groupId ? await getBridgeMemberMap(groupId, ids, userToken) : new Map();
+  const strictPrizeHunter = Boolean(state.filters?.strictPrizeHunter);
+  const wallMap = strictPrizeHunter ? await getBridgeWallSignals(ids, state.importScanDepth, userToken) : new Map();
+
+  const participants = users.map((user) => {
+    const wallSignals = wallMap.get(user.id) || {};
+    return {
+      id: user.id,
+      name: user.name,
+      profileUrl: user.profileUrl,
+      avatarUrl: user.avatarUrl,
+      actions: actionMap.get(user.id) || { repost: false, comment: false, like: false },
+      member: groupId ? memberMap.get(user.id) ?? null : null,
+      friends: user.friends,
+      ageDays: wallSignals.ageDays ?? null,
+      wallContestCount: wallSignals.wallContestCount ?? null,
+      repostShare: wallSignals.repostShare ?? null,
+      isCommunity: false,
+      isPrivate: wallSignals.isPrivate ?? user.isPrivate ?? false,
+      bioText: user.bioText || "",
+      wallText: wallSignals.wallText || "",
+    };
+  });
+
+  return {
+    participants,
+    meta: {
+      postUrl: state.postUrl,
+      ownerId: parsed.ownerId,
+      postId: parsed.postId,
+      selectedModes,
+      importedCount: participants.length,
+      scanDepth: state.importScanDepth,
+      clientBridgeImport: true,
+      repostImportAvailable: true,
+      strictPrizeHunter,
+    },
+  };
+}
+
+async function getBridgeRepostIds(parsed, userToken) {
+  const [copiesIds, wallIds] = await Promise.all([
+    paginateVkBridgeIds((offset, count) =>
+      vkApiCall("likes.getList", {
+        type: "post",
+        owner_id: parsed.ownerId,
+        item_id: parsed.postId,
+        filter: "copies",
+        count,
+        offset,
+      }, userToken),
+    ),
+    paginateVkBridgeIds(async (offset, count) => {
+      const data = await safeVkApiCall("wall.getReposts", {
+        owner_id: parsed.ownerId,
+        post_id: parsed.postId,
+        count: Math.min(count, 1000),
+        offset,
+      }, userToken);
+      if (!data) return [];
+      const itemOwnerIds = (data.items || []).map((item) => Number(item.owner_id)).filter((id) => id > 0);
+      const profileIds = (data.profiles || []).map((profile) => Number(profile.id)).filter((id) => id > 0);
+      return [...itemOwnerIds, ...profileIds];
+    }),
+  ]);
+
+  return Array.from(new Set([...copiesIds, ...wallIds]));
+}
+
+async function getBridgeUsers(ids, userToken) {
+  const rows = [];
+  for (const batch of chunkItems(ids, 1000)) {
+    const data = await vkApiCall("users.get", {
+      user_ids: batch.join(","),
+      fields: [
+        "counters",
+        "domain",
+        "photo_50",
+        "photo_100",
+        "photo_200",
+        "about",
+        "status",
+        "is_closed",
+      ].join(","),
+    }, userToken);
+
+    (data || []).forEach((user) => {
+      rows.push({
+        id: Number(user.id),
+        name: `${user.first_name || ""} ${user.last_name || ""}`.trim() || `id${user.id}`,
+        profileUrl: `https://vk.com/${user.domain || `id${user.id}`}`,
+        avatarUrl: user.photo_200 || user.photo_100 || user.photo_50 || "",
+        friends: user.counters && Number.isFinite(user.counters.friends) ? user.counters.friends : null,
+        isPrivate: Boolean(user.is_closed),
+        bioText: [user.about, user.status].filter(Boolean).join(" ").trim(),
+      });
+    });
+  }
+  return rows;
+}
+
+async function getBridgeMemberMap(groupId, ids, userToken) {
+  const result = new Map();
+  setApiStatus("Проверяю подписку на сообщество...");
+
+  for (const batch of chunkItems(ids, 500)) {
+    const data = await safeVkApiCall("groups.isMember", {
+      group_id: groupId,
+      user_ids: batch.join(","),
+    }, userToken);
+
+    if (Array.isArray(data)) {
+      data.forEach((row) => {
+        if (row && row.user_id !== undefined) {
+          result.set(Number(row.user_id), Boolean(Number(row.member)));
+        }
+      });
+    } else {
+      batch.forEach((id) => result.set(Number(id), null));
+    }
+  }
+  return result;
+}
+
+async function getBridgeWallSignals(ids, scanDepth, userToken) {
+  const result = new Map();
+  let done = 0;
+
+  await runBridgeLimited(
+    ids.map((id) => async () => {
+      const wall = await safeVkApiCall("wall.get", {
+        owner_id: id,
+        count: scanDepth,
+      }, userToken);
+
+      done += 1;
+      if (done % 50 === 0 || done === ids.length) {
+        setApiStatus(`Проверяю анти-призолов фильтры: ${done}/${ids.length}`);
+      }
+
+      if (!wall || !Array.isArray(wall.items)) {
+        result.set(id, { isPrivate: true, wallContestCount: null, repostShare: null, ageDays: null, wallText: "" });
+        return;
+      }
+
+      const items = wall.items;
+      const total = items.length || 1;
+      let repostCount = 0;
+      let contestCount = 0;
+      let oldestDate = null;
+      const wallTexts = [];
+
+      for (const post of items) {
+        if (Number.isInteger(post.date)) {
+          oldestDate = oldestDate === null ? post.date : Math.min(oldestDate, post.date);
+        }
+
+        const text = String(post.text || "").toLowerCase();
+        const copyText = Array.isArray(post.copy_history)
+          ? post.copy_history.map((entry) => String(entry.text || "")).join(" ").toLowerCase()
+          : "";
+        wallTexts.push(String(post.text || ""));
+
+        if (Array.isArray(post.copy_history) && post.copy_history.length) {
+          repostCount += 1;
+          if (containsBridgeContestText(text) || containsBridgeContestText(copyText)) {
+            contestCount += 1;
+          }
+        } else if (containsBridgeContestText(text)) {
+          contestCount += 1;
+        }
+      }
+
+      const now = Math.floor(Date.now() / 1000);
+      result.set(id, {
+        isPrivate: false,
+        wallContestCount: contestCount,
+        repostShare: total ? repostCount / total : null,
+        ageDays: oldestDate ? Math.max(0, Math.floor((now - oldestDate) / 86400)) : null,
+        wallText: wallTexts.join("\n").slice(0, 8000),
+      });
+    }),
+    3,
+  );
+
+  return result;
+}
+
+async function safeVkApiCall(method, params, userToken) {
+  try {
+    return await vkApiCall(method, params, userToken);
+  } catch {
+    return null;
+  }
 }
 
 async function vkApiCall(method, params, userToken) {
@@ -442,10 +712,35 @@ async function vkApiCall(method, params, userToken) {
     params: {
       ...params,
       access_token: userToken,
-      v: "5.199",
+      v: VK_API_VERSION,
     },
   });
   return payload.response;
+}
+
+async function runBridgeLimited(tasks, limit) {
+  let index = 0;
+  const workers = Array.from({ length: Math.min(limit, tasks.length) }, async () => {
+    while (index < tasks.length) {
+      const current = index;
+      index += 1;
+      await tasks[current]();
+    }
+  });
+  await Promise.all(workers);
+}
+
+function chunkItems(items, size) {
+  const chunks = [];
+  for (let i = 0; i < items.length; i += size) {
+    chunks.push(items.slice(i, i + size));
+  }
+  return chunks;
+}
+
+function containsBridgeContestText(text) {
+  const lower = String(text || "").toLowerCase();
+  return BRIDGE_CONTEST_KEYS.some((key) => lower.includes(key));
 }
 
 async function paginateVkBridgeIds(fetchPage, pageSize = 1000) {
@@ -532,6 +827,7 @@ function loadState() {
         requireGroupMember: true,
         excludeCommunities: true,
         excludePrivate: false,
+        strictPrizeHunter: false,
       },
       minFriends: 30,
       minAge: 60,
@@ -558,6 +854,7 @@ function loadState() {
         requireGroupMember: true,
         excludeCommunities: true,
         excludePrivate: false,
+        strictPrizeHunter: false,
       },
       minFriends: 30,
       minAge: 60,
@@ -840,20 +1137,26 @@ function evaluateParticipant(participant, state, requiredActions) {
     reasons.push("закрытый профиль");
   }
 
-  if (participant.friends !== null && participant.friends < state.minFriends) {
+  const strictPrizeHunter = Boolean(filters.strictPrizeHunter);
+
+  if (strictPrizeHunter && participant.friends !== null && participant.friends < state.minFriends) {
     reasons.push(`друзей ${participant.friends} < ${state.minFriends}`);
   }
 
-  if (participant.ageDays !== null && participant.ageDays < state.minAge) {
+  if (strictPrizeHunter && participant.ageDays !== null && participant.ageDays < state.minAge) {
     reasons.push(`возраст ${participant.ageDays}д < ${state.minAge}д`);
   }
 
-  if (participant.wallContestCount !== null && participant.wallContestCount > state.maxContests) {
+  if (strictPrizeHunter && participant.wallContestCount !== null && participant.wallContestCount > state.maxContests) {
     reasons.push(`конкурсов на стене ${participant.wallContestCount} > ${state.maxContests}`);
   }
 
-  if (participant.repostShare !== null && participant.repostShare > state.maxRepostShare) {
+  if (strictPrizeHunter && participant.repostShare !== null && participant.repostShare > state.maxRepostShare) {
     reasons.push(`доля репостов ${(participant.repostShare * 100).toFixed(0)}% > ${(state.maxRepostShare * 100).toFixed(0)}%`);
+  }
+
+  if (!strictPrizeHunter) {
+    return [...new Set(reasons)];
   }
 
   const spamWords = state.spamWords
