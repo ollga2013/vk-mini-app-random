@@ -1,0 +1,6 @@
+Error: groups.isMember: Too many requests per second
+    at vkCall (D:\Projects\vk-winner-mini-app\server.js:479:17)
+    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)
+    at async getMemberMap (D:\Projects\vk-winner-mini-app\server.js:353:18)
+    at async importParticipants (D:\Projects\vk-winner-mini-app\server.js:183:31)
+    at async handleRequest (D:\Projects\vk-winner-mini-app\server.js:101:22)

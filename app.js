@@ -128,6 +128,8 @@ const sampleTextParticipants = sampleParticipants.map(({ avatarUrl, ...rest }) =
 let demoMode = false;
 let demoParticipants = [];
 let importServerOk = false;
+let autoImportTimer = null;
+let importRequestSeq = 0;
 let lastState = loadState();
 let lastResult = null;
 
@@ -135,6 +137,7 @@ initBridge();
 bindEvents();
 hydrateState();
 recomputeAndRender();
+checkImportServer();
 
 function initBridge() {
   const bridge = window.vkBridge;
@@ -149,17 +152,22 @@ function bindEvents() {
   els.filters.addEventListener("change", persistAndRefresh);
 
   [
-    els.postUrl,
     els.pinnedPost,
     els.winnersCount,
     els.drawSeed,
-    els.importScanDepth,
     els.minFriends,
     els.minAge,
     els.maxContests,
     els.maxRepostShare,
     els.spamWords,
   ].forEach((node) => node.addEventListener("input", persistAndRefresh));
+
+  [els.postUrl, els.importScanDepth].forEach((node) => {
+    node.addEventListener("input", () => {
+      persistAndRefresh();
+      scheduleAutoImport();
+    });
+  });
 
   els.participants.addEventListener("input", () => {
     demoMode = false;
@@ -229,7 +237,6 @@ function bindEvents() {
   });
 
   window.addEventListener("beforeunload", saveState);
-  checkImportServer();
 }
 
 function handleModeChange(event) {
@@ -249,6 +256,7 @@ function handleModeChange(event) {
     allBox.checked = actionBoxes.every((box) => box.checked);
   }
   persistAndRefresh();
+  scheduleAutoImport(0);
 }
 
 function persistAndRefresh() {
@@ -256,7 +264,28 @@ function persistAndRefresh() {
   recomputeAndRender();
 }
 
-async function checkImportServer() {
+function scheduleAutoImport(delay = 700) {
+  clearTimeout(autoImportTimer);
+  demoMode = false;
+  demoParticipants = [];
+  els.participants.value = "";
+  persistAndRefresh();
+  setApiStatus("Ищу участников автоматически...");
+  autoImportTimer = setTimeout(() => {
+    const state = collectState();
+    if (!state.postUrl) {
+      setApiStatus("Нужна ссылка на пост для автоподтягивания участников.");
+      return;
+    }
+    if (!importServerOk) {
+      checkImportServer(true);
+      return;
+    }
+    importFromVk();
+  }, delay);
+}
+
+async function checkImportServer(silent = false) {
   setApiStatus("Проверяю proxy...");
   try {
     const response = await fetch("/api/status");
@@ -267,7 +296,13 @@ async function checkImportServer() {
     if (payload.hasUserToken) pieces.push("user token");
     if (payload.hasServiceToken) pieces.push("service token");
     const tokenText = pieces.length ? pieces.join(" + ") : "токены не заданы";
-    setApiStatus(payload.ready ? `Proxy готов · ${tokenText}` : `Proxy без токенов · ${tokenText}`);
+    const extra = payload.repostImportAvailable ? "" : " · repost нужен live user token";
+    setApiStatus(payload.ready ? `Proxy готов · ${tokenText}${extra}` : `Proxy без токенов · ${tokenText}${extra}`);
+    if (payload.ready && collectState().postUrl) {
+      scheduleAutoImport(0);
+    } else if (!payload.ready && !silent) {
+      setApiStatus("Proxy не готов. Запусти `node server.js`.");
+    }
     return payload;
   } catch (error) {
     importServerOk = false;
@@ -279,11 +314,12 @@ async function checkImportServer() {
 async function importFromVk() {
   const state = collectState();
   if (!state.postUrl) {
-    setApiStatus("Нужна ссылка на пост для импорта.");
+    setApiStatus("Нужна ссылка на пост для импорта участников.");
     return;
   }
 
   setApiStatus("Импортирую участников из VK...");
+  const requestSeq = ++importRequestSeq;
 
   try {
     const response = await fetch("/api/import", {
@@ -300,6 +336,7 @@ async function importFromVk() {
     if (!response.ok || payload.error) {
       throw new Error(payload.error || `HTTP ${response.status}`);
     }
+    if (requestSeq !== importRequestSeq) return;
 
     demoMode = false;
     demoParticipants = [];
@@ -307,6 +344,7 @@ async function importFromVk() {
     persistAndRefresh();
     setApiStatus(`Импорт готов · ${payload.participants?.length ?? 0} участников`);
   } catch (error) {
+    if (requestSeq !== importRequestSeq) return;
     setApiStatus(`Импорт не удался: ${String(error).replace(/^Error:\s*/, "")}`);
   }
 }
@@ -358,7 +396,7 @@ function loadState() {
   if (!raw) {
     return {
       postUrl: "",
-      entryModes: ["repost"],
+      entryModes: ["repost", "comment", "like"],
       pinnedPost: true,
       winnersCount: 3,
       drawSeed: "",
@@ -384,7 +422,7 @@ function loadState() {
     localStorage.removeItem(STORAGE_KEY);
     return {
       postUrl: "",
-      entryModes: ["repost"],
+      entryModes: ["repost", "comment", "like"],
       pinnedPost: true,
       winnersCount: 3,
       drawSeed: "",
@@ -417,7 +455,7 @@ function collectState() {
 
   return {
     postUrl: els.postUrl.value.trim(),
-    entryModes: entryModes.length ? entryModes : ["repost"],
+    entryModes: entryModes.length ? entryModes : ["repost", "comment", "like"],
     pinnedPost: els.pinnedPost.checked,
     winnersCount: clampInt(els.winnersCount.value, 1, 100, 3),
     drawSeed: els.drawSeed.value.trim(),

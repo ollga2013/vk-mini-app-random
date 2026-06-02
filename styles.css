@@ -154,6 +154,16 @@ h1 {
   gap: 10px;
 }
 
+#load-demo,
+#draw-winners,
+#import-vk {
+  display: none;
+}
+
+#entry-mode {
+  display: none;
+}
+
 .primary,
 .ghost,
 .file-button {
@@ -198,6 +208,10 @@ h1 {
 
 .panel-wide {
   grid-column: span 12;
+}
+
+.manual-panel {
+  display: none;
 }
 
 .panel-head {

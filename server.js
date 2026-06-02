@@ -14,6 +14,7 @@ const USER_TOKEN = String(process.env.VK_USER_TOKEN || process.env.VK_TOKEN || "
 const SERVICE_TOKEN = String(process.env.VK_SERVICE_TOKEN || "").trim();
 const DEFAULT_SCAN_DEPTH = clampInt(process.env.VK_IMPORT_SCAN_DEPTH, 10, 200, 60);
 const MAX_CONCURRENT = 6;
+let tokenDiagnosticsPromise = null;
 
 const CONTEST_KEYS = [
   "конкурс",
@@ -84,10 +85,14 @@ async function handleRequest(req, res) {
 
   if (pathname.startsWith("/api/")) {
     if (pathname === "/api/status" && req.method === "GET") {
+      const tokenDiagnostics = await getTokenDiagnostics();
       sendJson(res, 200, {
         ready: Boolean(USER_TOKEN || SERVICE_TOKEN),
         hasUserToken: Boolean(USER_TOKEN),
         hasServiceToken: Boolean(SERVICE_TOKEN),
+        userTokenValid: tokenDiagnostics.userTokenValid,
+        serviceTokenValid: tokenDiagnostics.serviceTokenValid,
+        repostImportAvailable: tokenDiagnostics.userTokenValid,
         apiVersion: API_VERSION,
       });
       return;
@@ -161,6 +166,7 @@ async function importParticipants({ postUrl, entryModes, scanDepth }) {
   const ownerId = parsed.ownerId;
   const postId = parsed.postId;
   const selectedModes = normalizeModes(entryModes);
+  const tokenDiagnostics = await getTokenDiagnostics();
   const sourceMaps = await collectSourceMaps(ownerId, postId, selectedModes);
   const ids = Array.from(sourceMaps.keys());
 
@@ -212,10 +218,15 @@ async function importParticipants({ postUrl, entryModes, scanDepth }) {
       ownerId,
       postId,
       selectedModes,
+      repostImportAvailable: tokenDiagnostics.userTokenValid,
       importedCount: participants.length,
       scanDepth,
       userTokenUsed: Boolean(USER_TOKEN),
       serviceTokenUsed: !USER_TOKEN && Boolean(SERVICE_TOKEN),
+      note:
+        selectedModes.includes("repost") && !tokenDiagnostics.userTokenValid
+          ? "Для репостов нужен живой user token с wall-правами. Сейчас repost-часть недоступна."
+          : undefined,
     },
   };
 }
@@ -267,17 +278,37 @@ function ensureAction(map, id) {
 }
 
 async function fetchReposters(ownerId, postId) {
-  return paginateIds(async (offset, count) => {
-    const data = await vkCall("likes.getList", {
-      type: "post",
-      owner_id: ownerId,
-      item_id: postId,
-      filter: "copies",
-      count,
-      offset,
+  const ids = new Set();
+
+  try {
+    const repostIds = await paginateIds(async (offset, count) => {
+      const data = await vkCall("wall.getReposts", {
+        owner_id: ownerId,
+        post_id: postId,
+        count,
+        offset,
+      });
+      return extractRepostOwnerIds(data);
     });
-    return data.items || [];
-  });
+    repostIds.forEach((id) => ids.add(id));
+  } catch {}
+
+  try {
+    const copyIds = await paginateIds(async (offset, count) => {
+      const data = await vkCall("likes.getList", {
+        type: "post",
+        owner_id: ownerId,
+        item_id: postId,
+        filter: "copies",
+        count,
+        offset,
+      });
+      return data.items || [];
+    });
+    copyIds.forEach((id) => ids.add(id));
+  } catch {}
+
+  return Array.from(ids);
 }
 
 async function fetchLikers(ownerId, postId) {
@@ -308,6 +339,18 @@ async function fetchCommenters(ownerId, postId) {
       .map((comment) => comment.from_id)
       .filter((id) => Number.isInteger(id) && id > 0);
   });
+}
+
+function extractRepostOwnerIds(response) {
+  const items = Array.isArray(response?.items) ? response.items : [];
+  const ids = [];
+  for (const item of items) {
+    const ownerId = Number(item && item.owner_id);
+    if (Number.isInteger(ownerId) && ownerId > 0) {
+      ids.push(ownerId);
+    }
+  }
+  return ids;
 }
 
 async function getUsers(ids) {
@@ -349,15 +392,36 @@ async function getUsers(ids) {
 
 async function getMemberMap(groupId, ids) {
   const result = new Map();
-  for (const id of ids) {
-    const data = await vkCall("groups.isMember", {
-      group_id: groupId,
-      user_id: id,
-    });
-    if (typeof data === "object" && data !== null && "member" in data) {
-      result.set(id, Boolean(Number(data.member)));
+  for (const batch of chunk(ids, 500)) {
+    let data = null;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        data = await vkCall("groups.isMember", {
+          group_id: groupId,
+          user_ids: batch.join(","),
+        });
+        break;
+      } catch (error) {
+        const message = String(error && error.message ? error.message : error);
+        if (!message.includes("Too many requests per second") || attempt === 2) {
+          data = null;
+          break;
+        }
+        await sleep(250 * (attempt + 1));
+      }
+    }
+
+    if (Array.isArray(data)) {
+      data.forEach((row) => {
+        if (!row || row.user_id === undefined) return;
+        result.set(Number(row.user_id), Boolean(Number(row.member)));
+      });
+    } else if (typeof data === "object" && data !== null && "member" in data) {
+      batch.forEach((id) => result.set(Number(id), Boolean(Number(data.member))));
+    } else if (data !== null && data !== undefined) {
+      batch.forEach((id) => result.set(Number(id), Boolean(data)));
     } else {
-      result.set(id, Boolean(data));
+      batch.forEach((id) => result.set(Number(id), null));
     }
   }
   return result;
@@ -459,26 +523,61 @@ async function vkCall(method, params = {}) {
 
   let lastError = null;
   for (const token of tokens) {
-    const data = new URLSearchParams();
-    for (const [key, value] of Object.entries(params)) {
-      if (value === undefined || value === null || value === "") continue;
-      data.set(key, String(value));
+    try {
+      return await vkCallWithToken(method, params, token);
+    } catch (error) {
+      lastError = error;
     }
-    data.set("access_token", token);
-    data.set("v", API_VERSION);
-
-    const response = await fetch(`https://api.vk.com/method/${method}`, {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: data.toString(),
-    });
-    const payload = await response.json();
-    if (!payload.error) {
-      return payload.response;
-    }
-    lastError = new Error(`${method}: ${payload.error.error_msg || "VK API error"}`);
   }
   throw lastError || new Error(`${method}: VK API error`);
+}
+
+async function vkCallWithToken(method, params = {}, token) {
+  const tokens = Array.from(new Set([USER_TOKEN, SERVICE_TOKEN].filter(Boolean)));
+  if (!token || !tokens.includes(token)) {
+    throw new Error("VK tokens are not configured.");
+  }
+
+  const data = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === null || value === "") continue;
+    data.set(key, String(value));
+  }
+  data.set("access_token", token);
+  data.set("v", API_VERSION);
+
+  const response = await fetch(`https://api.vk.com/method/${method}`, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: data.toString(),
+  });
+  const payload = await response.json();
+  if (!payload.error) {
+    return payload.response;
+  }
+  throw new Error(`${method}: ${payload.error.error_msg || "VK API error"}`);
+}
+
+async function getTokenDiagnostics() {
+  if (tokenDiagnosticsPromise) return tokenDiagnosticsPromise;
+  tokenDiagnosticsPromise = (async () => {
+    const [userTokenValid, serviceTokenValid] = await Promise.all([
+      validateToken(USER_TOKEN),
+      validateToken(SERVICE_TOKEN),
+    ]);
+    return { userTokenValid, serviceTokenValid };
+  })();
+  return tokenDiagnosticsPromise;
+}
+
+async function validateToken(token) {
+  if (!token) return false;
+  try {
+    await vkCallWithToken("users.get", { user_ids: 1 }, token);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function safeVkCall(method, params = {}) {
@@ -573,6 +672,10 @@ function chunk(items, size) {
     result.push(items.slice(i, i + size));
   }
   return result;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function runLimited(tasks, limit) {
