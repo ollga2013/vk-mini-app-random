@@ -212,8 +212,17 @@ function bindEvents() {
   });
 
   els.drawWinners.addEventListener("click", async () => {
-    await importFromVkFresh();
-    els.winnersList.scrollIntoView({ behavior: "smooth", block: "start" });
+    try {
+      els.drawWinners.disabled = true;
+      setApiStatus("Начинаю подведение итогов...");
+      await importFromVkFresh();
+      els.winnersList.scrollIntoView({ behavior: "smooth", block: "start" });
+    } catch (error) {
+      console.error("Draw failed", error);
+      setApiStatus(`Подведение не удалось: ${formatVkError(error)}`);
+    } finally {
+      els.drawWinners.disabled = false;
+    }
   });
 
   els.downloadReport.addEventListener("click", () => {
