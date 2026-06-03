@@ -412,9 +412,10 @@ async function importFromVkFresh() {
   try {
     setApiStatus("Запрашиваю доступ VK к стене...");
     const userToken = await requestVkUserTokenFresh();
-    const payload = userToken
-      ? await importFromVkBridge(state, userToken)
-      : await importFromServer(state, "");
+    if (!userToken) {
+      throw new Error("VK не ответил на запрос токена. Открой приложение внутри VK Mini App.");
+    }
+    const payload = await importFromVkBridge(state, userToken);
     if (payload.error) throw new Error(payload.error);
     if (requestSeq !== importRequestSeq) return;
 
@@ -449,10 +450,7 @@ async function requestVkUserTokenFresh() {
     }
     return String(authPayload?.access_token || "");
   } catch (error) {
-    if (!canUseLocalApi()) {
-      throw error;
-    }
-    return "";
+    throw error;
   }
 }
 
