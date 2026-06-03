@@ -1,4 +1,4 @@
-const STORAGE_KEY = "vk-winner-mini-app:v3";
+const STORAGE_KEY = "vk-winner-mini-app:v4";
 const AUTOFILL_SEED_PREFIX = "seed:";
 const VK_APP_ID = 54544038;
 const VK_IMPORT_SCOPE = "wall,groups";
@@ -18,6 +18,8 @@ const BRIDGE_CONTEST_KEYS = [
   "подарок",
 ];
 
+localStorage.removeItem("vk-winner-mini-app:v3");
+
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
 
@@ -28,11 +30,7 @@ const els = {
   winnersCount: $("#winners-count"),
   drawSeed: $("#draw-seed"),
   filters: $("#filters"),
-  minFriends: $("#min-friends"),
-  minAge: $("#min-age"),
   maxContests: $("#max-contests"),
-  maxRepostShare: $("#max-repost-share"),
-  spamWords: $("#spam-words"),
   participants: $("#participants"),
   importScanDepth: $("#import-scan-depth"),
   eligibleCount: $("#eligible-count"),
@@ -176,11 +174,7 @@ function bindEvents() {
     els.pinnedPost,
     els.winnersCount,
     els.drawSeed,
-    els.minFriends,
-    els.minAge,
     els.maxContests,
-    els.maxRepostShare,
-    els.spamWords,
   ].forEach((node) => node.addEventListener("input", persistAndRefresh));
 
   [els.postUrl, els.importScanDepth].forEach((node) => node.addEventListener("input", persistAndRefresh));
@@ -214,7 +208,7 @@ function bindEvents() {
   });
 
   els.checkImport.addEventListener("click", checkImportServer);
-  els.importVk.addEventListener("click", importFromVk);
+  els.importVk.addEventListener("click", importFromVkFresh);
 
   els.copyReport.addEventListener("click", async () => {
     const text = buildReportText(lastResult ?? recompute());
@@ -845,11 +839,7 @@ function hydrateState() {
   els.winnersCount.value = String(lastState.winnersCount ?? 3);
   els.drawSeed.value = lastState.drawSeed ?? "";
   els.importScanDepth.value = String(lastState.importScanDepth ?? 60);
-  els.minFriends.value = String(lastState.minFriends ?? 30);
-  els.minAge.value = String(lastState.minAge ?? 60);
   els.maxContests.value = String(lastState.maxContests ?? 3);
-  els.maxRepostShare.value = String(lastState.maxRepostShare ?? 0.9);
-  els.spamWords.value = lastState.spamWords ?? "конкурс, розыгрыш, giveaway, приз, репост, акция, выиграй";
   els.participants.value = lastState.participantsText ?? "";
 
   $$('input[type="checkbox"]', els.modeBox).forEach((box) => {
@@ -894,11 +884,7 @@ function loadState() {
         excludePrivate: false,
         strictPrizeHunter: false,
       },
-      minFriends: 30,
-      minAge: 60,
       maxContests: 3,
-      maxRepostShare: 0.9,
-      spamWords: "конкурс, розыгрыш, giveaway, приз, репост, акция, выиграй",
       participantsText: "",
     };
   }
@@ -921,11 +907,7 @@ function loadState() {
         excludePrivate: false,
         strictPrizeHunter: false,
       },
-      minFriends: 30,
-      minAge: 60,
       maxContests: 3,
-      maxRepostShare: 0.9,
-      spamWords: "конкурс, розыгрыш, giveaway, приз, репост, акция, выиграй",
       participantsText: "",
     };
   }
@@ -949,11 +931,7 @@ function collectState() {
     drawSeed: els.drawSeed.value.trim(),
     importScanDepth: clampInt(els.importScanDepth.value, 10, 200, 60),
     filters,
-    minFriends: clampInt(els.minFriends.value, 0, 10000, 30),
-    minAge: clampInt(els.minAge.value, 0, 99999, 60),
     maxContests: clampInt(els.maxContests.value, 0, 1000, 3),
-    maxRepostShare: clampFloat(els.maxRepostShare.value, 0, 1, 0.9),
-    spamWords: els.spamWords.value.trim(),
     participantsText: demoMode ? "" : els.participants.value,
     participantsData: demoMode ? demoParticipants : parseParticipants(els.participants.value),
   };
@@ -961,12 +939,6 @@ function collectState() {
 
 function clampInt(value, min, max, fallback) {
   const num = Number.parseInt(value, 10);
-  if (Number.isNaN(num)) return fallback;
-  return Math.min(max, Math.max(min, num));
-}
-
-function clampFloat(value, min, max, fallback) {
-  const num = Number.parseFloat(value);
   if (Number.isNaN(num)) return fallback;
   return Math.min(max, Math.max(min, num));
 }
@@ -1204,34 +1176,12 @@ function evaluateParticipant(participant, state, requiredActions) {
 
   const strictPrizeHunter = Boolean(filters.strictPrizeHunter);
 
-  if (strictPrizeHunter && participant.friends !== null && participant.friends < state.minFriends) {
-    reasons.push(`друзей ${participant.friends} < ${state.minFriends}`);
-  }
-
-  if (strictPrizeHunter && participant.ageDays !== null && participant.ageDays < state.minAge) {
-    reasons.push(`возраст ${participant.ageDays}д < ${state.minAge}д`);
-  }
-
   if (strictPrizeHunter && participant.wallContestCount !== null && participant.wallContestCount > state.maxContests) {
     reasons.push(`конкурсов на стене ${participant.wallContestCount} > ${state.maxContests}`);
   }
 
-  if (strictPrizeHunter && participant.repostShare !== null && participant.repostShare > state.maxRepostShare) {
-    reasons.push(`доля репостов ${(participant.repostShare * 100).toFixed(0)}% > ${(state.maxRepostShare * 100).toFixed(0)}%`);
-  }
-
   if (!strictPrizeHunter) {
     return [...new Set(reasons)];
-  }
-
-  const spamWords = state.spamWords
-    .split(",")
-    .map((word) => word.trim().toLowerCase())
-    .filter(Boolean);
-  const combinedText = `${participant.bioText} ${participant.wallText}`.toLowerCase();
-  const spamHits = spamWords.filter((word) => combinedText.includes(word)).length;
-  if (spamHits > 0) {
-    reasons.push(`спам-слова: ${spamHits}`);
   }
 
   return [...new Set(reasons)];
@@ -1330,11 +1280,7 @@ function buildReportText(result) {
     `- Подписка: ${result.filters.requireGroupMember ? "вкл" : "выкл"}`,
     `- Сообщества: ${result.filters.excludeCommunities ? "исключать" : "не исключать"}`,
     `- Закрытые профили: ${result.filters.excludePrivate ? "исключать" : "не исключать"}`,
-    `- Мин. друзей: ${result.minFriends}`,
-    `- Мин. возраст: ${result.minAge} дней`,
     `- Макс. конкурсов на стене: ${result.maxContests}`,
-    `- Макс. доля репостов: ${(result.maxRepostShare * 100).toFixed(0)}%`,
-    `- Спам-слова: ${result.spamWords || "нет"}`,
     "",
     "Победители:",
   ];
@@ -1479,10 +1425,7 @@ async function drawResultCanvas(ctx, result, allowRemoteImages) {
     `Подписка: ${result.filters.requireGroupMember ? "вкл" : "выкл"}`,
     `Сообщества: ${result.filters.excludeCommunities ? "исключать" : "не исключать"}`,
     `Закрытые профили: ${result.filters.excludePrivate ? "исключать" : "не исключать"}`,
-    `Мин. друзей: ${result.minFriends}`,
-    `Мин. возраст: ${result.minAge} дней`,
     `Макс. конкурсов на стене: ${result.maxContests}`,
-    `Макс. доля репостов: ${(result.maxRepostShare * 100).toFixed(0)}%`,
   ];
   ctx.fillStyle = "#10233d";
   ctx.font = "600 24px Manrope, sans-serif";

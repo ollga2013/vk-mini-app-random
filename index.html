@@ -103,31 +103,10 @@
             </label>
           </div>
 
-          <div class="two-col compact anti-advanced">
-            <label class="field">
-              <span>Минимум друзей</span>
-              <input id="min-friends" type="number" min="0" value="30" />
-            </label>
-            <label class="field">
-              <span>Возраст аккаунта, дней</span>
-              <input id="min-age" type="number" min="0" value="60" />
-            </label>
-          </div>
-
-          <div class="two-col compact anti-advanced">
-            <label class="field">
-              <span>Макс. конкурсов на стене</span>
-              <input id="max-contests" type="number" min="0" value="3" />
-            </label>
-            <label class="field">
-              <span>Макс. доля репостов</span>
-              <input id="max-repost-share" type="number" min="0" max="1" step="0.05" value="0.9" />
-            </label>
-          </div>
-
-          <label class="field anti-advanced">
-            <span>Спам-слова, через запятую</span>
-            <textarea id="spam-words" rows="3">конкурс, розыгрыш, giveaway, приз, репост, акция, выиграй</textarea>
+          <label class="field">
+            <span>Макс. конкурсов на стене</span>
+            <input id="max-contests" type="number" min="0" value="3" />
+            <div class="subtle">Только этот фильтр из "анти-призоловов".</div>
           </label>
         </article>
 
