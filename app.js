@@ -348,7 +348,8 @@ async function importFromVk() {
     setApiStatus(`Импорт готов · ${payload.participants?.length ?? 0} участников`);
   } catch (error) {
     if (requestSeq !== importRequestSeq) return;
-    setApiStatus(`Импорт не удался: ${String(error).replace(/^Error:\s*/, "")}`);
+    console.error("VK import failed", error);
+    setApiStatus(`Импорт не удался: ${formatVkError(error)}`);
   }
 }
 
@@ -421,7 +422,8 @@ async function importFromVkFresh() {
     setApiStatus(`Импорт готов · ${payload.participants?.length ?? 0} участников${note}`);
   } catch (error) {
     if (requestSeq !== importRequestSeq) return;
-    setApiStatus(`Импорт не удался: ${String(error).replace(/^Error:\s*/, "")}`);
+    console.error("VK import failed", error);
+    setApiStatus(`Импорт не удался: ${formatVkError(error)}`);
   }
 }
 
@@ -438,14 +440,25 @@ async function requestVkUserTokenFresh() {
       canUseLocalApi() ? 1500 : 12000,
       "VK Bridge не ответил. Открой приложение внутри VK.",
     );
-    const grantedScopes = new Set(String(authPayload?.scope || "").split(",").map((scope) => scope.trim()));
-    if (!grantedScopes.has("wall")) {
+    const token = String(authPayload?.access_token || "");
+    if (!token) {
+      throw new Error(`VK не вернул access_token. ${formatVkError(authPayload)}`);
+    }
+    const grantedScopes = getGrantedScopes(authPayload?.scope);
+    if (grantedScopes.size && !grantedScopes.has("wall")) {
       throw new Error("VK не выдал доступ wall. Разреши доступ к стене, чтобы проверить репосты.");
     }
-    return String(authPayload?.access_token || "");
+    return token;
   } catch (error) {
     throw error;
   }
+}
+
+function getGrantedScopes(scope) {
+  if (Array.isArray(scope)) {
+    return new Set(scope.map((item) => String(item).trim()).filter(Boolean));
+  }
+  return new Set(String(scope || "").split(",").map((item) => item.trim()).filter(Boolean));
 }
 
 function isVkLaunchContext() {
@@ -766,15 +779,69 @@ async function safeVkApiCall(method, params, userToken) {
 }
 
 async function vkApiCall(method, params, userToken) {
-  const payload = await window.vkBridge.send("VKWebAppCallAPIMethod", {
-    method,
-    params: {
-      ...params,
-      access_token: userToken,
-      v: VK_API_VERSION,
-    },
-  });
-  return payload.response;
+  try {
+    const payload = await window.vkBridge.send("VKWebAppCallAPIMethod", {
+      method,
+      params: {
+        ...params,
+        access_token: userToken,
+        v: VK_API_VERSION,
+      },
+    });
+    if (payload?.error) {
+      throw payload.error;
+    }
+    if (!payload || !Object.prototype.hasOwnProperty.call(payload, "response")) {
+      throw new Error(`VK API ${method} вернул пустой ответ`);
+    }
+    return payload.response;
+  } catch (error) {
+    throw new Error(`${method}: ${formatVkError(error)}`);
+  }
+}
+
+function formatVkError(error) {
+  if (!error) return "неизвестная ошибка";
+  if (typeof error === "string") return error.replace(/^Error:\s*/, "");
+  if (error instanceof Error && error.message) return error.message.replace(/^Error:\s*/, "");
+
+  const data = error.error_data || error.error || error.data || {};
+  const fields = [
+    error.error_type,
+    error.error_code,
+    error.error_msg,
+    error.error_message,
+    error.error_description,
+    error.message,
+    data.error_type,
+    data.error_code,
+    data.error_msg,
+    data.error_message,
+    data.error_description,
+    data.error_reason,
+    data.message,
+  ]
+    .filter((item) => item !== undefined && item !== null && String(item).trim())
+    .map((item) => String(item).trim());
+
+  if (fields.length) return [...new Set(fields)].join(" · ");
+
+  try {
+    return JSON.stringify(sanitizeVkError(error));
+  } catch {
+    return "объект ошибки VK Bridge";
+  }
+}
+
+function sanitizeVkError(value) {
+  if (Array.isArray(value)) return value.map(sanitizeVkError);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value).map(([key, item]) => [
+      key,
+      key.toLowerCase().includes("token") ? "[hidden]" : sanitizeVkError(item),
+    ]),
+  );
 }
 
 async function runBridgeLimited(tasks, limit) {
