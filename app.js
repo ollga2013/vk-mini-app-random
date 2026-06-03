@@ -1,4 +1,4 @@
-const STORAGE_KEY = "vk-winner-mini-app:v2";
+const STORAGE_KEY = "vk-winner-mini-app:v3";
 const AUTOFILL_SEED_PREFIX = "seed:";
 const VK_APP_ID = 54544038;
 const VK_IMPORT_SCOPE = "wall,groups";
@@ -157,7 +157,7 @@ recomputeAndRender();
 if (canUseLocalApi()) {
   checkImportServer();
 } else {
-  setApiStatus("VK Bridge готов. Открой приложение внутри VK и нажми «Подвести итоги».");
+  setApiStatus(isVkLaunchContext() ? "VK Bridge готов. Нажми «Подвести итоги»." : "Открой приложение внутри VK, чтобы запросить доступ к стене.");
 }
 
 function initBridge() {
@@ -223,7 +223,7 @@ function bindEvents() {
   });
 
   els.drawWinners.addEventListener("click", async () => {
-    await importFromVk();
+    await importFromVkFresh();
     els.winnersList.scrollIntoView({ behavior: "smooth", block: "start" });
   });
 
@@ -296,7 +296,7 @@ function scheduleAutoImport(delay = 700) {
       checkImportServer(true);
       return;
     }
-    importFromVk();
+    importFromVkFresh();
   }, delay);
 }
 
@@ -394,6 +394,73 @@ async function requestVkUserToken() {
   }
 }
 
+async function importFromVkFresh() {
+  const state = collectState();
+  if (!state.postUrl) {
+    setApiStatus("Нужна ссылка на пост для импорта участников.");
+    return;
+  }
+
+  if (!canUseLocalApi() && !isVkLaunchContext()) {
+    setApiStatus("Открой приложение внутри VK. Запрос `wall/groups` работает только в VK Mini App.");
+    return;
+  }
+
+  setApiStatus("Импортирую участников из VK...");
+  const requestSeq = ++importRequestSeq;
+
+  try {
+    setApiStatus("Запрашиваю доступ VK к стене...");
+    const userToken = await requestVkUserTokenFresh();
+    const payload = userToken
+      ? await importFromVkBridge(state, userToken)
+      : await importFromServer(state, "");
+    if (payload.error) throw new Error(payload.error);
+    if (requestSeq !== importRequestSeq) return;
+
+    demoMode = false;
+    demoParticipants = [];
+    els.participants.value = JSON.stringify(payload.participants ?? [], null, 2);
+    persistAndRefresh();
+    const note = payload?.meta?.note ? ` · ${payload.meta.note}` : "";
+    setApiStatus(`Импорт готов · ${payload.participants?.length ?? 0} участников${note}`);
+  } catch (error) {
+    if (requestSeq !== importRequestSeq) return;
+    setApiStatus(`Импорт не удался: ${String(error).replace(/^Error:\s*/, "")}`);
+  }
+}
+
+async function requestVkUserTokenFresh() {
+  const bridge = window.vkBridge;
+  if (!bridge || typeof bridge.send !== "function") return "";
+
+  try {
+    const authPayload = await withTimeout(
+      bridge.send("VKWebAppGetAuthToken", {
+        app_id: VK_APP_ID,
+        scope: VK_IMPORT_SCOPE,
+      }),
+      canUseLocalApi() ? 1500 : 12000,
+      "VK Bridge не ответил. Открой приложение внутри VK.",
+    );
+    const grantedScopes = new Set(String(authPayload?.scope || "").split(",").map((scope) => scope.trim()));
+    if (!grantedScopes.has("wall")) {
+      throw new Error("VK не выдал доступ wall. Разреши доступ к стене, чтобы проверить репосты.");
+    }
+    return String(authPayload?.access_token || "");
+  } catch (error) {
+    if (!canUseLocalApi()) {
+      throw error;
+    }
+    return "";
+  }
+}
+
+function isVkLaunchContext() {
+  const params = new URLSearchParams(window.location.search);
+  return params.has("vk_user_id") || params.has("vk_app_id") || params.has("vk_platform");
+}
+
 function withTimeout(promise, timeoutMs, message) {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(message)), timeoutMs);
@@ -487,7 +554,7 @@ async function importFromVkBridge(state, userToken) {
 }
 
 function canUseLocalApi() {
-  return LOCAL_API_HOSTS.has(window.location.hostname);
+  return LOCAL_API_HOSTS.has(window.location.hostname) && window.location.port === "4173";
 }
 
 async function buildBridgeImportPayload({ state, parsed, actionMap, selectedModes, userToken }) {
@@ -823,8 +890,8 @@ function loadState() {
       drawSeed: "",
       importScanDepth: 60,
       filters: {
-        requireAvatar: true,
-        requireGroupMember: true,
+        requireAvatar: false,
+        requireGroupMember: false,
         excludeCommunities: true,
         excludePrivate: false,
         strictPrizeHunter: false,
@@ -850,8 +917,8 @@ function loadState() {
       drawSeed: "",
       importScanDepth: 60,
       filters: {
-        requireAvatar: true,
-        requireGroupMember: true,
+        requireAvatar: false,
+        requireGroupMember: false,
         excludeCommunities: true,
         excludePrivate: false,
         strictPrizeHunter: false,
@@ -1185,7 +1252,15 @@ function render(result) {
 
 function renderWinners(result) {
   if (!result.winners.length) {
-    els.winnersList.innerHTML = `<div class="empty-state">Пока нет допущенных участников. Проверь данные и фильтры.</div>`;
+    let message = "Пока нет допущенных участников.";
+    if (!result.participants.length) {
+      message = "Импорт не дал участников. Проверь ссылку и доступ VK к стене.";
+    } else if (result.reasonCounts?.["нет репоста"] > 0 && result.reasonCounts["нет репоста"] >= result.participants.length / 2) {
+      message = "Участники есть, но репосты не подтянулись. Проверь доступ `wall/groups` и режим участия.";
+    } else if (result.excluded.length === result.participants.length) {
+      message = "Все участники отсеяны фильтрами. Сними лишние галочки или отключи строгую проверку.";
+    }
+    els.winnersList.innerHTML = `<div class="empty-state">${message}</div>`;
     return;
   }
 
