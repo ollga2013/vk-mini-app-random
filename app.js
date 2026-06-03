@@ -1,6 +1,6 @@
 const STORAGE_KEY = "vk-winner-mini-app:v4";
 const AUTOFILL_SEED_PREFIX = "seed:";
-const VK_APP_ID = 54544038;
+const DEFAULT_VK_APP_ID = 54544038;
 const VK_IMPORT_SCOPE = "wall,groups";
 const VK_API_VERSION = "5.199";
 const LOCAL_API_HOSTS = new Set(["localhost", "127.0.0.1", ""]);
@@ -359,7 +359,7 @@ async function requestVkUserToken() {
 
   try {
     const authPayload = await withTimeout(bridge.send("VKWebAppGetAuthToken", {
-      app_id: VK_APP_ID,
+      app_id: getVkAppId(),
       scope: VK_IMPORT_SCOPE,
     }), canUseLocalApi() ? 1500 : 12000, "VK Bridge не ответил. Открой приложение внутри VK.");
     const grantedScopes = new Set(String(authPayload?.scope || "").split(",").map((scope) => scope.trim()));
@@ -377,7 +377,7 @@ async function requestVkUserToken() {
     }
 
     const payload = await bridge.send("VKWebAppGetAuthToken", {
-      app_id: VK_APP_ID,
+      app_id: getVkAppId(),
       scope: ["wall", allowed.has("groups") ? "groups" : ""].filter(Boolean).join(","),
     });
     return String(payload?.access_token || "");
@@ -405,7 +405,7 @@ async function importFromVkFresh() {
   const requestSeq = ++importRequestSeq;
 
   try {
-    setApiStatus("Запрашиваю доступ VK к стене...");
+    setApiStatus(`Запрашиваю доступ VK к стене · app_id ${getVkAppId()}`);
     const userToken = await requestVkUserTokenFresh();
     if (!userToken) {
       throw new Error("VK не ответил на запрос токена. Открой приложение внутри VK Mini App.");
@@ -434,7 +434,7 @@ async function requestVkUserTokenFresh() {
   try {
     const authPayload = await withTimeout(
       bridge.send("VKWebAppGetAuthToken", {
-        app_id: VK_APP_ID,
+        app_id: getVkAppId(),
         scope: VK_IMPORT_SCOPE,
       }),
       canUseLocalApi() ? 1500 : 12000,
@@ -461,9 +461,24 @@ function getGrantedScopes(scope) {
   return new Set(String(scope || "").split(",").map((item) => item.trim()).filter(Boolean));
 }
 
+function getVkAppId() {
+  const params = getLaunchParams();
+  const appId = Number(params.get("vk_app_id"));
+  return Number.isInteger(appId) && appId > 0 ? appId : DEFAULT_VK_APP_ID;
+}
+
 function isVkLaunchContext() {
-  const params = new URLSearchParams(window.location.search);
+  const params = getLaunchParams();
   return params.has("vk_user_id") || params.has("vk_app_id") || params.has("vk_platform");
+}
+
+function getLaunchParams() {
+  const params = new URLSearchParams(window.location.search);
+  if (!params.size && window.location.hash.includes("vk_app_id=")) {
+    const hashParams = window.location.hash.slice(window.location.hash.indexOf("vk_app_id="));
+    return new URLSearchParams(hashParams);
+  }
+  return params;
 }
 
 function withTimeout(promise, timeoutMs, message) {
