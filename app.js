@@ -1,5 +1,4 @@
 const STORAGE_KEY = "vk-winner-mini-app:v4";
-const AUTOFILL_SEED_PREFIX = "seed:";
 const DEFAULT_VK_APP_ID = 54620998;
 const VK_IMPORT_SCOPE = "wall,groups";
 const VK_API_VERSION = "5.199";
@@ -28,14 +27,12 @@ const els = {
   modeBox: $("#entry-mode"),
   pinnedPost: $("#pinned-post"),
   winnersCount: $("#winners-count"),
-  drawSeed: $("#draw-seed"),
   filters: $("#filters"),
   maxContests: $("#max-contests"),
   participants: $("#participants"),
   importScanDepth: $("#import-scan-depth"),
   eligibleCount: $("#eligible-count"),
   excludedCount: $("#excluded-count"),
-  seedPreview: $("#seed-preview"),
   reportPreview: $("#report-preview"),
   winnersList: $("#winners-list"),
   auditLog: $("#audit-log"),
@@ -173,7 +170,6 @@ function bindEvents() {
   [
     els.pinnedPost,
     els.winnersCount,
-    els.drawSeed,
     els.maxContests,
   ].forEach((node) => node.addEventListener("input", persistAndRefresh));
 
@@ -189,7 +185,6 @@ function bindEvents() {
     demoMode = true;
     demoParticipants = sampleParticipants;
     els.participants.value = "";
-    els.drawSeed.value = `${AUTOFILL_SEED_PREFIX}${new Date().toISOString().slice(0, 10)}`;
     persistAndRefresh();
   });
 
@@ -934,7 +929,6 @@ function hydrateState() {
   els.postUrl.value = lastState.postUrl ?? "";
   els.pinnedPost.checked = lastState.pinnedPost ?? true;
   els.winnersCount.value = String(lastState.winnersCount ?? 3);
-  els.drawSeed.value = lastState.drawSeed ?? "";
   els.importScanDepth.value = String(lastState.importScanDepth ?? 60);
   els.maxContests.value = String(lastState.maxContests ?? 3);
   els.participants.value = lastState.participantsText ?? "";
@@ -972,7 +966,6 @@ function loadState() {
       entryModes: ["repost", "comment", "like"],
       pinnedPost: true,
       winnersCount: 3,
-      drawSeed: "",
       importScanDepth: 60,
       filters: {
         requireAvatar: false,
@@ -995,7 +988,6 @@ function loadState() {
       entryModes: ["repost", "comment", "like"],
       pinnedPost: true,
       winnersCount: 3,
-      drawSeed: "",
       importScanDepth: 60,
       filters: {
         requireAvatar: false,
@@ -1025,7 +1017,6 @@ function collectState() {
     entryModes: entryModes.length ? entryModes : ["repost", "comment", "like"],
     pinnedPost: els.pinnedPost.checked,
     winnersCount: clampInt(els.winnersCount.value, 1, 100, 3),
-    drawSeed: els.drawSeed.value.trim(),
     importScanDepth: clampInt(els.importScanDepth.value, 10, 200, 60),
     filters,
     maxContests: clampInt(els.maxContests.value, 0, 1000, 3),
@@ -1053,10 +1044,6 @@ function recompute() {
     ? ["repost", "comment", "like"]
     : state.entryModes.filter((mode) => mode !== "all");
   const requiredActions = normalizedModes.length ? normalizedModes : ["repost"];
-  const seedSource = state.drawSeed || `${AUTOFILL_SEED_PREFIX}${state.postUrl || "manual"}:${participants.length}`;
-  const seedValue = hashString(seedSource);
-  const rng = mulberry32(seedValue);
-
   const evaluated = participants.map((participant, index) => {
     const p = normalizeParticipant(participant, index);
     const reasons = evaluateParticipant(p, state, requiredActions);
@@ -1070,7 +1057,7 @@ function recompute() {
   const eligible = evaluated.filter((item) => item.passed);
   const excluded = evaluated.filter((item) => !item.passed);
   const winnerCount = Math.min(state.winnersCount, eligible.length);
-  const winners = shuffle([...eligible], rng).slice(0, winnerCount);
+  const winners = shuffle([...eligible]).slice(0, winnerCount);
   const reasonCounts = tallyReasons(excluded);
 
   return {
@@ -1080,8 +1067,6 @@ function recompute() {
     excluded,
     winners,
     reasonCounts,
-    seedSource,
-    seedValue,
     requiredActions,
   };
 }
@@ -1287,7 +1272,6 @@ function evaluateParticipant(participant, state, requiredActions) {
 function render(result) {
   els.eligibleCount.textContent = String(result.eligible.length);
   els.excludedCount.textContent = String(result.excluded.length);
-  els.seedPreview.textContent = result.drawSeed || result.seedSource.replace(AUTOFILL_SEED_PREFIX, "");
 
   els.reportPreview.textContent = buildReportText(result);
 
@@ -1368,7 +1352,6 @@ function buildReportText(result) {
     `Условие: ${modeText || "не указано"}`,
     `Пост закреплен: ${result.pinnedPost ? "да" : "нет"}`,
     `Победителей: ${result.winners.length}/${result.winnersCount}`,
-    `Seed: ${result.drawSeed || result.seedSource}`,
     `Допущено: ${result.eligible.length}`,
     `Исключено: ${result.excluded.length}`,
     "",
@@ -1413,31 +1396,26 @@ function tallyReasons(excluded) {
   return map;
 }
 
-function shuffle(items, rng) {
+function shuffle(items) {
   const array = [...items];
   for (let i = array.length - 1; i > 0; i -= 1) {
-    const j = Math.floor(rng() * (i + 1));
+    const j = secureRandomIndex(i + 1);
     [array[i], array[j]] = [array[j], array[i]];
   }
   return array;
 }
 
-function mulberry32(seed) {
-  return function random() {
-    let t = (seed += 0x6d2b79f5);
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
-function hashString(input) {
-  let hash = 2166136261;
-  for (let i = 0; i < input.length; i += 1) {
-    hash ^= input.charCodeAt(i);
-    hash = Math.imul(hash, 16777619);
+function secureRandomIndex(maxExclusive) {
+  if (maxExclusive <= 1) return 0;
+  const bytes = new Uint32Array(1);
+  if (window.crypto?.getRandomValues) {
+    const limit = Math.floor(0xffffffff / maxExclusive) * maxExclusive;
+    do {
+      window.crypto.getRandomValues(bytes);
+    } while (bytes[0] >= limit);
+    return bytes[0] % maxExclusive;
   }
-  return hash >>> 0;
+  return Math.floor(Math.random() * maxExclusive);
 }
 
 function downloadText(filename, text) {
@@ -1511,7 +1489,6 @@ async function drawResultCanvas(ctx, result, allowRemoteImages) {
   const chipsBottom = drawMetaChips(ctx, 70, 185, w - 140, [
     `Условие: ${result.requiredActions.map((a) => actionLabels[a]).join(", ")}`,
     `Пост закреплен: ${result.pinnedPost ? "да" : "нет"}`,
-    `Seed: ${shortenText(result.drawSeed || result.seedSource, 46)}`,
   ]);
 
   const panelY = chipsBottom + 34;
@@ -1520,14 +1497,12 @@ async function drawResultCanvas(ctx, result, allowRemoteImages) {
   drawPanel(ctx, statsX, panelY, statsW, 170, "Статистика");
   ctx.font = "800 42px Manrope, sans-serif";
   ctx.fillStyle = "#10233d";
-  ctx.fillText(String(result.eligible.length), statsX + 36, panelY + 88);
-  ctx.fillText(String(result.excluded.length), statsX + 180, panelY + 88);
-  ctx.fillText(`${result.winners.length}/${result.winnersCount}`, statsX + 360, panelY + 88);
+  ctx.fillText(String(result.participants.length), statsX + 36, panelY + 88);
+  ctx.fillText(`${result.winners.length}/${result.winnersCount}`, statsX + 250, panelY + 88);
   ctx.font = "600 18px Manrope, sans-serif";
   ctx.fillStyle = "#5f708a";
-  ctx.fillText("допущено", statsX + 36, panelY + 124);
-  ctx.fillText("исключено", statsX + 180, panelY + 124);
-  ctx.fillText("победителей", statsX + 360, panelY + 124);
+  ctx.fillText("участников всего", statsX + 36, panelY + 124);
+  ctx.fillText("победителей", statsX + 250, panelY + 124);
 
   const winnersPanelY = panelY + 220;
   drawPanel(ctx, 70, winnersPanelY, w - 140, Math.max(430, result.winners.length * 170 + 70), "Победители");
@@ -1555,7 +1530,7 @@ async function drawResultCanvas(ctx, result, allowRemoteImages) {
   const footerY = Math.max(1110, startY + result.winners.length * 170 + 20);
   ctx.fillStyle = "#5f708a";
   ctx.font = "600 19px Manrope, sans-serif";
-  ctx.fillText(`Рандомайзер для конкурсов. Допущено: ${result.eligible.length}. Исключено: ${result.excluded.length}.`, 70, footerY);
+  ctx.fillText(`Рандомайзер для конкурсов. Участников всего: ${result.participants.length}.`, 70, footerY);
 }
 
 function drawMetaChips(ctx, x, y, maxWidth, labels) {
