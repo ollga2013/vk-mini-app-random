@@ -724,6 +724,7 @@ async function getBridgeMemberMap(groupId, ids, userToken) {
 async function getBridgeWallSignals(ids, scanDepth, userToken) {
   const result = new Map();
   let done = 0;
+  const startedAt = Date.now();
 
   await runBridgeLimited(
     ids.map((id) => async () => {
@@ -733,8 +734,8 @@ async function getBridgeWallSignals(ids, scanDepth, userToken) {
       }, userToken);
 
       done += 1;
-      if (done % 50 === 0 || done === ids.length) {
-        setApiStatus(`Проверяю анти-призолов фильтры: ${done}/${ids.length}`);
+      if (done % 10 === 0 || done === ids.length) {
+        setApiStatus(`Проверяю стены: ${done}/${ids.length} · осталось примерно ${estimateRemainingTime(startedAt, done, ids.length)}`);
       }
 
       if (!wall || !Array.isArray(wall.items)) {
@@ -779,10 +780,24 @@ async function getBridgeWallSignals(ids, scanDepth, userToken) {
         wallText: wallTexts.join("\n").slice(0, 8000),
       });
     }),
-    3,
+    6,
   );
 
   return result;
+}
+
+function estimateRemainingTime(startedAt, done, total) {
+  if (!done || !total || done >= total) return "00:00";
+  const elapsedMs = Date.now() - startedAt;
+  const remainingMs = (elapsedMs / done) * (total - done);
+  return formatDuration(remainingMs);
+}
+
+function formatDuration(ms) {
+  const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 }
 
 async function safeVkApiCall(method, params, userToken) {
@@ -1485,9 +1500,6 @@ async function drawResultCanvas(ctx, result, allowRemoteImages) {
   ctx.fillStyle = bg;
   ctx.fillRect(0, 0, w, h);
 
-  drawSoftOrb(ctx, 120, 120, 250, "rgba(38,128,235,0.16)");
-  drawSoftOrb(ctx, w - 170, 180, 260, "rgba(23,140,87,0.12)");
-
   ctx.fillStyle = "#10233d";
   ctx.font = "800 58px Manrope, sans-serif";
   ctx.fillText("Итоги розыгрыша", 70, 92);
@@ -1496,12 +1508,18 @@ async function drawResultCanvas(ctx, result, allowRemoteImages) {
   ctx.fillStyle = "#5f708a";
   wrapText(ctx, `Пост: ${result.postUrl || "не указан"}`, 70, 135, w - 140, 34);
 
-  const metaY = 185;
-  drawMetaChip(ctx, 70, metaY, `Условие: ${result.requiredActions.map((a) => actionLabels[a]).join(", ")}`);
-  drawMetaChip(ctx, 70 + 360, metaY, `Пост закреплен: ${result.pinnedPost ? "да" : "нет"}`);
-  drawMetaChip(ctx, 70 + 720, metaY, `Seed: ${result.drawSeed || result.seedSource}`);
+  const chipsBottom = drawMetaChips(ctx, 70, 185, w - 140, [
+    `Условие: ${result.requiredActions.map((a) => actionLabels[a]).join(", ")}`,
+    `Пост закреплен: ${result.pinnedPost ? "да" : "нет"}`,
+    `Seed: ${shortenText(result.drawSeed || result.seedSource, 46)}`,
+  ]);
 
-  drawPanel(ctx, 70, 245, w - 140, 220, "Фильтры");
+  const panelY = chipsBottom + 34;
+  const filterX = 70;
+  const filterW = 940;
+  const statsX = 1050;
+  const statsW = w - statsX - 70;
+  drawPanel(ctx, filterX, panelY, filterW, 230, "Фильтры");
   const filterLines = [
     `Аватар: ${result.filters.requireAvatar ? "вкл" : "выкл"}`,
     `Подписка: ${result.filters.requireGroupMember ? "вкл" : "выкл"}`,
@@ -1512,22 +1530,23 @@ async function drawResultCanvas(ctx, result, allowRemoteImages) {
   ctx.fillStyle = "#10233d";
   ctx.font = "600 24px Manrope, sans-serif";
   filterLines.forEach((line, index) => {
-    ctx.fillText(`• ${line}`, 98, 308 + index * 24);
+    ctx.fillText(`• ${line}`, filterX + 28, panelY + 78 + index * 30);
   });
 
-  drawPanel(ctx, w - 500, 245, 430, 220, "Статистика");
+  drawPanel(ctx, statsX, panelY, statsW, 230, "Статистика");
   ctx.font = "800 42px Manrope, sans-serif";
   ctx.fillStyle = "#10233d";
-  ctx.fillText(String(result.eligible.length), w - 460, 320);
-  ctx.fillText(String(result.excluded.length), w - 320, 320);
+  ctx.fillText(String(result.eligible.length), statsX + 36, panelY + 88);
+  ctx.fillText(String(result.excluded.length), statsX + 180, panelY + 88);
   ctx.font = "600 18px Manrope, sans-serif";
   ctx.fillStyle = "#5f708a";
-  ctx.fillText("допущено", w - 460, 355);
-  ctx.fillText("исключено", w - 320, 355);
-  ctx.fillText(`Победителей: ${result.winners.length}/${result.winnersCount}`, w - 460, 395);
+  ctx.fillText("допущено", statsX + 36, panelY + 124);
+  ctx.fillText("исключено", statsX + 180, panelY + 124);
+  ctx.fillText(`Победителей: ${result.winners.length}/${result.winnersCount}`, statsX + 36, panelY + 168);
 
-  drawPanel(ctx, 70, 500, w - 140, Math.max(430, result.winners.length * 170 + 70), "Победители");
-  const startY = 585;
+  const winnersPanelY = panelY + 280;
+  drawPanel(ctx, 70, winnersPanelY, w - 140, Math.max(430, result.winners.length * 170 + 70), "Победители");
+  const startY = winnersPanelY + 85;
   for (let i = 0; i < result.winners.length; i += 1) {
     const winner = result.winners[i];
     const rowY = startY + i * 170;
@@ -1545,13 +1564,33 @@ async function drawResultCanvas(ctx, result, allowRemoteImages) {
     ctx.fillStyle = "#5f708a";
     ctx.fillText(`id${winner.id}`, 260, rowY + 96);
     ctx.fillText(shortUrl(winner.profileUrl), 260, rowY + 124);
-    drawWinnerBadge(ctx, w - 300, rowY + 48, i + 1);
+    drawWinnerBadge(ctx, w - 310, rowY + 48, i + 1);
   }
 
   const footerY = Math.max(1110, startY + result.winners.length * 170 + 20);
   ctx.fillStyle = "#5f708a";
   ctx.font = "600 19px Manrope, sans-serif";
-  ctx.fillText(`Generated from VK Mini App. Допущено: ${result.eligible.length}. Исключено: ${result.excluded.length}.`, 70, footerY);
+  ctx.fillText(`Рандомайзер для конкурсов. Допущено: ${result.eligible.length}. Исключено: ${result.excluded.length}.`, 70, footerY);
+}
+
+function drawMetaChips(ctx, x, y, maxWidth, labels) {
+  let cursorX = x;
+  let cursorY = y;
+  const gap = 14;
+  const height = 46;
+
+  labels.forEach((label) => {
+    ctx.font = "700 20px Manrope, sans-serif";
+    const width = Math.min(maxWidth, Math.max(210, ctx.measureText(label).width + 34));
+    if (cursorX > x && cursorX + width > x + maxWidth) {
+      cursorX = x;
+      cursorY += height + gap;
+    }
+    drawMetaChip(ctx, cursorX, cursorY, label, width);
+    cursorX += width + gap;
+  });
+
+  return cursorY + height;
 }
 
 function drawPanel(ctx, x, y, width, height, title) {
@@ -1566,15 +1605,20 @@ function drawPanel(ctx, x, y, width, height, title) {
   ctx.fillText(title, x + 28, y + 42);
 }
 
-function drawMetaChip(ctx, x, y, text) {
+function drawMetaChip(ctx, x, y, text, width = null) {
   ctx.font = "700 20px Manrope, sans-serif";
-  const width = Math.min(320, Math.max(250, ctx.measureText(text).width + 34));
+  const chipWidth = width ?? Math.max(250, ctx.measureText(text).width + 34);
   ctx.fillStyle = "rgba(38,128,235,0.1)";
-  roundRect(ctx, x, y, width, 46, 999);
+  roundRect(ctx, x, y, chipWidth, 46, 999);
   ctx.fill();
   ctx.fillStyle = "#1763c4";
   ctx.font = "700 20px Manrope, sans-serif";
   ctx.fillText(text, x + 18, y + 30);
+}
+
+function shortenText(value, maxLength) {
+  const text = String(value || "");
+  return text.length > maxLength ? `${text.slice(0, maxLength - 1)}…` : text;
 }
 
 function drawWinnerBadge(ctx, x, y, index) {
