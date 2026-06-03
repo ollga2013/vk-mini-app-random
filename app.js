@@ -1323,7 +1323,7 @@ function renderWinners(result) {
             <div class="winner-name">${escapeHtml(winner.name)}</div>
           <div class="winner-sub">id${escapeHtml(winner.id)} · ${escapeHtml(shortUrl(winner.profileUrl))}</div>
           </div>
-          <div class="winner-status">Победитель ${index + 1}</div>
+          <div class="winner-status">${index + 1} место</div>
         </div>
       `;
     })
@@ -1515,36 +1515,21 @@ async function drawResultCanvas(ctx, result, allowRemoteImages) {
   ]);
 
   const panelY = chipsBottom + 34;
-  const filterX = 70;
-  const filterW = 940;
-  const statsX = 1050;
-  const statsW = w - statsX - 70;
-  drawPanel(ctx, filterX, panelY, filterW, 230, "Фильтры");
-  const filterLines = [
-    `Аватар: ${result.filters.requireAvatar ? "вкл" : "выкл"}`,
-    `Подписка: ${result.filters.requireGroupMember ? "вкл" : "выкл"}`,
-    `Сообщества: ${result.filters.excludeCommunities ? "исключать" : "не исключать"}`,
-    `Закрытые профили: ${result.filters.excludePrivate ? "исключать" : "не исключать"}`,
-    `Макс. конкурсов на стене: ${result.maxContests}`,
-  ];
-  ctx.fillStyle = "#10233d";
-  ctx.font = "600 24px Manrope, sans-serif";
-  filterLines.forEach((line, index) => {
-    ctx.fillText(`• ${line}`, filterX + 28, panelY + 78 + index * 30);
-  });
-
-  drawPanel(ctx, statsX, panelY, statsW, 230, "Статистика");
+  const statsX = 70;
+  const statsW = w - 140;
+  drawPanel(ctx, statsX, panelY, statsW, 170, "Статистика");
   ctx.font = "800 42px Manrope, sans-serif";
   ctx.fillStyle = "#10233d";
   ctx.fillText(String(result.eligible.length), statsX + 36, panelY + 88);
   ctx.fillText(String(result.excluded.length), statsX + 180, panelY + 88);
+  ctx.fillText(`${result.winners.length}/${result.winnersCount}`, statsX + 360, panelY + 88);
   ctx.font = "600 18px Manrope, sans-serif";
   ctx.fillStyle = "#5f708a";
   ctx.fillText("допущено", statsX + 36, panelY + 124);
   ctx.fillText("исключено", statsX + 180, panelY + 124);
-  ctx.fillText(`Победителей: ${result.winners.length}/${result.winnersCount}`, statsX + 36, panelY + 168);
+  ctx.fillText("победителей", statsX + 360, panelY + 124);
 
-  const winnersPanelY = panelY + 280;
+  const winnersPanelY = panelY + 220;
   drawPanel(ctx, 70, winnersPanelY, w - 140, Math.max(430, result.winners.length * 170 + 70), "Победители");
   const startY = winnersPanelY + 85;
   for (let i = 0; i < result.winners.length; i += 1) {
@@ -1564,7 +1549,7 @@ async function drawResultCanvas(ctx, result, allowRemoteImages) {
     ctx.fillStyle = "#5f708a";
     ctx.fillText(`id${winner.id}`, 260, rowY + 96);
     ctx.fillText(shortUrl(winner.profileUrl), 260, rowY + 124);
-    drawWinnerBadge(ctx, w - 310, rowY + 48, i + 1);
+    drawWinnerBadge(ctx, w - 270, rowY + 48, i + 1);
   }
 
   const footerY = Math.max(1110, startY + result.winners.length * 170 + 20);
@@ -1627,7 +1612,7 @@ function drawWinnerBadge(ctx, x, y, index) {
   ctx.fill();
   ctx.fillStyle = "#178c57";
   ctx.font = "800 20px Manrope, sans-serif";
-  ctx.fillText(`Победитель ${index}`, x + 18, y + 29);
+  ctx.fillText(`${index} место`, x + 24, y + 29);
 }
 
 function drawSoftOrb(ctx, x, y, size, color) {
