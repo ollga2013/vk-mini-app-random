@@ -1,6 +1,6 @@
 const STORAGE_KEY = "vk-winner-mini-app:v4";
 const AUTOFILL_SEED_PREFIX = "seed:";
-const DEFAULT_VK_APP_ID = 54544038;
+const DEFAULT_VK_APP_ID = 54620998;
 const VK_IMPORT_SCOPE = "wall,groups";
 const VK_API_VERSION = "5.199";
 const LOCAL_API_HOSTS = new Set(["localhost", "127.0.0.1", ""]);
