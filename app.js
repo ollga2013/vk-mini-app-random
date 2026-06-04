@@ -6,7 +6,6 @@ const LOCAL_API_HOSTS = new Set(["localhost", "127.0.0.1", ""]);
 const MAX_IMPORT_ITEMS = 50000;
 const MAX_WINNERS = 10000;
 const BRIDGE_MAX_CONCURRENT = 4;
-const MAX_PRIZE_FIELDS = 50;
 const BRIDGE_CONTEST_KEYS = [
   "конкурс",
   "розыгрыш",
@@ -180,10 +179,12 @@ function bindEvents() {
     els.pinnedPost,
     els.maxContests,
   ].forEach((node) => node.addEventListener("input", persistAndRefresh));
-  els.winnersCount.addEventListener("input", () => {
+  const syncPrizesAndRefresh = () => {
     renderPrizeInputs();
     persistAndRefresh();
-  });
+  };
+  els.winnersCount.addEventListener("input", syncPrizesAndRefresh);
+  els.winnersCount.addEventListener("change", syncPrizesAndRefresh);
   els.prizeList.addEventListener("input", persistAndRefresh);
 
   els.postUrl.addEventListener("input", () => {
@@ -1098,17 +1099,44 @@ function getCurrentPrizes() {
   return $$(".prize-input", els.prizeList).map((input) => input.value.trim());
 }
 
+function getPrizeFieldCount() {
+  return clampInt(els.winnersCount.value, 1, MAX_WINNERS, 3);
+}
+
+function ensurePrizeInputCount() {
+  if (els.prizeList.children.length !== getPrizeFieldCount()) {
+    renderPrizeInputs();
+  }
+}
+
 function renderPrizeInputs(prizes = getCurrentPrizes()) {
-  const count = Math.min(MAX_PRIZE_FIELDS, clampInt(els.winnersCount.value, 1, MAX_WINNERS, 3));
-  els.prizeList.innerHTML = Array.from({ length: count }, (_, index) => {
+  const count = getPrizeFieldCount();
+  const shouldApplyValues = arguments.length > 0;
+
+  while (els.prizeList.children.length > count) {
+    els.prizeList.lastElementChild.remove();
+  }
+
+  for (let index = 0; index < count; index += 1) {
     const place = index + 1;
-    return `
-      <label class="prize-row">
-        <span>${place} место</span>
-        <input class="prize-input" type="text" value="${escapeAttr(prizes[index] || "")}" placeholder="Приз для ${place} места" autocomplete="off" />
-      </label>
-    `;
-  }).join("");
+    let row = els.prizeList.children[index];
+
+    if (!row) {
+      row = document.createElement("label");
+      row.className = "prize-row";
+      row.innerHTML = '<span></span><input class="prize-input" type="text" autocomplete="off" />';
+      els.prizeList.appendChild(row);
+    }
+
+    const label = row.querySelector("span");
+    const input = row.querySelector(".prize-input");
+    label.textContent = `${place} место`;
+    input.placeholder = `Приз для ${place} места`;
+    if (shouldApplyValues || !input.dataset.ready) {
+      input.value = prizes[index] || "";
+      input.dataset.ready = "true";
+    }
+  }
 }
 
 function saveState() {
@@ -1187,13 +1215,15 @@ function collectState() {
   $$('#filters input[type="checkbox"]').forEach((box) => {
     filters[box.dataset.filter] = box.checked;
   });
-  const prizes = getCurrentPrizes();
+  ensurePrizeInputCount();
+  const winnersCount = getPrizeFieldCount();
+  const prizes = getCurrentPrizes().slice(0, winnersCount);
 
   return {
     postUrl: els.postUrl.value.trim(),
     entryModes: entryModes.length ? entryModes : ["repost", "comment", "like"],
     pinnedPost: els.pinnedPost.checked,
-    winnersCount: clampInt(els.winnersCount.value, 1, MAX_WINNERS, 3),
+    winnersCount,
     prizeText: prizes.find(Boolean) || "",
     prizes,
     importScanDepth: clampInt(els.importScanDepth.value, 10, 200, 60),
