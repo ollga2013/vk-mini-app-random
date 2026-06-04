@@ -414,7 +414,9 @@ async function importFromVkFresh() {
     if (!userToken) {
       throw new Error("VK не ответил на запрос токена. Открой приложение внутри VK Mini App.");
     }
-    const payload = await importFromVkBridge(state, userToken);
+    const payload = canUseLocalApi()
+      ? await importFromServer(state, userToken)
+      : await importFromVkBridge(state, userToken);
     if (payload.error) throw new Error(payload.error);
     if (requestSeq !== importRequestSeq) return;
 
