@@ -158,7 +158,7 @@ recomputeAndRender();
 if (canUseBackendApi()) {
   checkImportServer();
 } else {
-  setApiStatus(isVkLaunchContext() ? "VK Bridge готов. Нажми «Подвести итоги»." : "Открой приложение внутри VK, чтобы запросить доступ к стене.");
+  setApiStatus(isVkLaunchContext() ? "Нажми «Подвести итоги»." : "Открой приложение внутри VK, чтобы запросить доступ к стене.");
 }
 
 function initBridge() {
@@ -342,29 +342,23 @@ function scheduleAutoImport(delay = 700) {
 async function checkImportServer(silent = false) {
   if (!canUseBackendApi()) {
     importServerOk = false;
-    setApiStatus("Опубликованная версия работает через VK Bridge, без /api на GitHub Pages.");
+    setApiStatus(isVkLaunchContext() ? "Нажми «Подвести итоги»." : "Открой приложение внутри VK, чтобы запросить доступ к стене.");
     return { ready: false, skipped: true };
   }
-  setApiStatus("Проверяю proxy...");
+  setApiStatus("Проверяю доступ...");
   try {
     const response = await fetch(apiUrl("/api/status"));
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const payload = await response.json();
     importServerOk = Boolean(payload.ready);
-    const pieces = [];
-    if (payload.hasUserToken) pieces.push("user token");
-    if (payload.hasServiceToken) pieces.push("service token");
-    const tokenText = pieces.length ? pieces.join(" + ") : "токены не заданы";
-    const extra = payload.repostImportAvailable ? "" : " · repost нужен live user token";
-    const auth = payload.launchAuthRequired ? " · VK auth" : "";
-    setApiStatus(payload.ready ? `Proxy готов · ${tokenText}${extra}${auth}` : `Proxy без токенов · ${tokenText}${extra}${auth}`);
+    setApiStatus(payload.ready ? "Нажми «Подвести итоги»." : "Сервер не готов. Проверь токены.");
     if (!payload.ready && !silent) {
-      setApiStatus("Proxy не готов. Запусти `node server.js`.");
+      setApiStatus("Сервер не готов. Запусти `node server.js`.");
     }
     return payload;
   } catch (error) {
     importServerOk = false;
-    setApiStatus("Proxy недоступен. Запусти `node server.js`.");
+    setApiStatus("Сервер недоступен. Запусти `node server.js`.");
     return { ready: false, error: String(error) };
   }
 }

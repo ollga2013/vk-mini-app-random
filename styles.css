@@ -29,6 +29,7 @@
 html,
 body {
   min-height: 100%;
+  overflow-x: hidden;
 }
 
 body {
@@ -166,9 +167,11 @@ h1 {
 .status-line {
   display: block;
   margin-top: 10px;
+  margin-bottom: 16px;
   padding: 10px 12px;
   border-radius: var(--radius-xs);
   background: rgba(38, 128, 235, 0.08);
+  line-height: 1.35;
 }
 
 .primary,
@@ -318,7 +321,7 @@ textarea:focus {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
-  margin-bottom: 14px;
+  margin: 0 0 14px;
 }
 
 .chip {
@@ -616,15 +619,65 @@ textarea:focus {
 
 @media (max-width: 720px) {
   .shell {
-    padding: 18px 14px 32px;
+    padding: 12px 10px 28px;
   }
 
   .panel {
-    padding: 16px;
+    border-radius: 18px;
+    padding: 14px;
   }
 
   h1 {
-    font-size: 32px;
+    font-size: 28px;
+    line-height: 1.12;
+  }
+
+  .lead {
+    font-size: 14px;
+  }
+
+  .topbar {
+    gap: 14px;
+    margin-bottom: 14px;
+  }
+
+  .topbar-actions {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .topbar-actions .primary,
+  .topbar-actions .ghost {
+    width: 100%;
+  }
+
+  .panel-head {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .status-line {
+    margin-bottom: 18px;
+    padding: 9px 10px;
+  }
+
+  .choice-row {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .chip {
+    width: 100%;
+    min-height: 44px;
+    justify-content: flex-start;
+    padding: 10px 12px;
+    border-radius: 14px;
+  }
+
+  .chip input {
+    flex: 0 0 auto;
   }
 
   .two-col,
@@ -640,5 +693,31 @@ textarea:focus {
 
   .stats strong {
     font-size: 20px;
+  }
+}
+
+@media (max-width: 420px) {
+  .shell {
+    padding-inline: 8px;
+  }
+
+  .choice-row,
+  .field-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .field-actions {
+    display: grid;
+  }
+
+  .field-actions .small {
+    width: 100%;
+  }
+
+  input[type="text"],
+  input[type="url"],
+  input[type="number"],
+  textarea {
+    padding: 12px;
   }
 }
