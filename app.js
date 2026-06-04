@@ -139,6 +139,7 @@ const sampleTextParticipants = sampleParticipants.map(({ avatarUrl, ...rest }) =
 
 let demoMode = false;
 let demoParticipants = [];
+let importedParticipants = null;
 let importServerOk = false;
 let autoImportTimer = null;
 let importRequestSeq = 0;
@@ -173,17 +174,23 @@ function bindEvents() {
     els.maxContests,
   ].forEach((node) => node.addEventListener("input", persistAndRefresh));
 
-  [els.postUrl, els.importScanDepth].forEach((node) => node.addEventListener("input", persistAndRefresh));
+  els.postUrl.addEventListener("input", () => {
+    importedParticipants = null;
+    persistAndRefresh();
+  });
+  els.importScanDepth.addEventListener("input", persistAndRefresh);
 
   els.participants.addEventListener("input", () => {
     demoMode = false;
     demoParticipants = [];
+    importedParticipants = null;
     persistAndRefresh();
   });
 
   els.loadDemo.addEventListener("click", () => {
     demoMode = true;
     demoParticipants = sampleParticipants;
+    importedParticipants = null;
     els.participants.value = "";
     persistAndRefresh();
   });
@@ -191,6 +198,7 @@ function bindEvents() {
   els.useSample.addEventListener("click", () => {
     demoMode = false;
     demoParticipants = [];
+    importedParticipants = null;
     els.participants.value = JSON.stringify(sampleTextParticipants, null, 2);
     persistAndRefresh();
   });
@@ -198,6 +206,7 @@ function bindEvents() {
   els.clearParticipants.addEventListener("click", () => {
     demoMode = false;
     demoParticipants = [];
+    importedParticipants = null;
     els.participants.value = "";
     persistAndRefresh();
   });
@@ -245,6 +254,7 @@ function bindEvents() {
     if (!file) return;
     demoMode = false;
     demoParticipants = [];
+    importedParticipants = null;
     const text = await file.text();
     els.participants.value = text;
     persistAndRefresh();
@@ -281,6 +291,7 @@ function scheduleAutoImport(delay = 700) {
   clearTimeout(autoImportTimer);
   demoMode = false;
   demoParticipants = [];
+  importedParticipants = null;
   els.participants.value = "";
   persistAndRefresh();
   setApiStatus("Ищу участников автоматически...");
@@ -347,6 +358,7 @@ async function importFromVk() {
 
     demoMode = false;
     demoParticipants = [];
+    importedParticipants = payload.participants ?? [];
     els.participants.value = JSON.stringify(payload.participants ?? [], null, 2);
     persistAndRefresh();
     setApiStatus(`Импорт готов · ${payload.participants?.length ?? 0} участников`);
@@ -422,6 +434,7 @@ async function importFromVkFresh() {
 
     demoMode = false;
     demoParticipants = [];
+    importedParticipants = payload.participants ?? [];
     els.participants.value = JSON.stringify(payload.participants ?? [], null, 2);
     persistAndRefresh();
     const note = payload?.meta?.note ? ` · ${payload.meta.note}` : "";
@@ -979,8 +992,15 @@ function hydrateState() {
 function saveState() {
   const state = collectState();
   const { participantsData, ...persistable } = state;
+  if (importedParticipants) {
+    persistable.participantsText = "";
+  }
   lastState = persistable;
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(persistable));
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(persistable));
+  } catch {
+    localStorage.removeItem(STORAGE_KEY);
+  }
 }
 
 function loadState() {
@@ -1045,8 +1065,8 @@ function collectState() {
     importScanDepth: clampInt(els.importScanDepth.value, 10, 200, 60),
     filters,
     maxContests: clampInt(els.maxContests.value, 0, 1000, 3),
-    participantsText: demoMode ? "" : els.participants.value,
-    participantsData: demoMode ? demoParticipants : parseParticipants(els.participants.value),
+    participantsText: demoMode || importedParticipants ? "" : els.participants.value,
+    participantsData: demoMode ? demoParticipants : importedParticipants ?? parseParticipants(els.participants.value),
   };
 }
 
