@@ -30,6 +30,7 @@ const els = {
   modeBox: $("#entry-mode"),
   pinnedPost: $("#pinned-post"),
   winnersCount: $("#winners-count"),
+  prizeText: $("#prize-text"),
   participantsCount: $("#participants-count"),
   filters: $("#filters"),
   maxContests: $("#max-contests"),
@@ -49,7 +50,6 @@ const els = {
   copyReport: $("#copy-report"),
   drawWinners: $("#draw-winners"),
   downloadReport: $("#download-report"),
-  downloadJson: $("#download-json"),
   downloadImages: $$("#download-image, [data-action='download-image']"),
   useSample: $("#use-sample"),
   clearParticipants: $("#clear-participants"),
@@ -178,6 +178,7 @@ function bindEvents() {
   [
     els.pinnedPost,
     els.winnersCount,
+    els.prizeText,
     els.maxContests,
   ].forEach((node) => node.addEventListener("input", persistAndRefresh));
 
@@ -266,11 +267,6 @@ function bindEvents() {
   els.downloadReport.addEventListener("click", () => {
     const text = buildReportText(lastResult ?? recompute());
     downloadText("vk-results-report.txt", text);
-  });
-
-  els.downloadJson.addEventListener("click", () => {
-    const payload = JSON.stringify(lastResult ?? recompute(), null, 2);
-    downloadText("vk-results-report.json", payload);
   });
 
   els.downloadImages.forEach((button) => {
@@ -1052,6 +1048,7 @@ function hydrateState() {
   els.postUrl.value = "";
   els.pinnedPost.checked = lastState.pinnedPost ?? true;
   els.winnersCount.value = String(lastState.winnersCount ?? 3);
+  els.prizeText.value = lastState.prizeText ?? "";
   els.importScanDepth.value = String(lastState.importScanDepth ?? 60);
   els.maxContests.value = String(lastState.maxContests ?? 3);
   els.participants.value = lastState.participantsText ?? "";
@@ -1113,6 +1110,7 @@ function loadState() {
       entryModes: ["repost", "comment", "like"],
       pinnedPost: true,
       winnersCount: 3,
+      prizeText: "",
       importScanDepth: 60,
       filters: {
         requireAvatar: false,
@@ -1136,6 +1134,7 @@ function loadState() {
       entryModes: ["repost", "comment", "like"],
       pinnedPost: true,
       winnersCount: 3,
+      prizeText: "",
       importScanDepth: 60,
       filters: {
         requireAvatar: false,
@@ -1165,6 +1164,7 @@ function collectState() {
     entryModes: entryModes.length ? entryModes : ["repost", "comment", "like"],
     pinnedPost: els.pinnedPost.checked,
     winnersCount: clampInt(els.winnersCount.value, 1, MAX_WINNERS, 3),
+    prizeText: els.prizeText.value.trim(),
     importScanDepth: clampInt(els.importScanDepth.value, 10, 200, 60),
     filters,
     maxContests: clampInt(els.maxContests.value, 0, 1000, 3),
@@ -1514,6 +1514,7 @@ function buildResultMetaLabels(result) {
   const labels = [];
   const modeText = result.requiredActions.map((action) => actionLabels[action]).join(", ");
   if (modeText) labels.push(`\u0423\u0441\u043b\u043e\u0432\u0438\u0435: ${modeText}`);
+  if (result.prizeText) labels.push(`\u041f\u0440\u0438\u0437: ${shortenText(result.prizeText, 64)}`);
   if (result.pinnedPost) labels.push("\u041f\u043e\u0441\u0442 \u0437\u0430\u043a\u0440\u0435\u043f\u043b\u0435\u043d");
   return labels;
 }
@@ -1533,30 +1534,26 @@ function buildEnabledFilterLines(result) {
 
 function buildReportText(result) {
   const lines = [
-    "\u0418\u0442\u043e\u0433\u0438 \u0440\u043e\u0437\u044b\u0433\u0440\u044b\u0448\u0430",
+    "🎉 Итоги конкурса",
     "",
-    `\u041f\u043e\u0441\u0442: ${result.postUrl || "\u043d\u0435 \u0443\u043a\u0430\u0437\u0430\u043d"}`,
-    ...buildResultMetaLabels(result),
-    `\u041f\u043e\u0431\u0435\u0434\u0438\u0442\u0435\u043b\u0435\u0439: ${result.winners.length}/${result.winnersCount}`,
-    `\u0423\u0447\u0430\u0441\u0442\u043d\u0438\u043a\u043e\u0432: ${result.totalParticipants}`,
-    `\u0414\u043e\u043f\u0443\u0449\u0435\u043d\u043e: ${result.eligible.length}`,
-    `\u0418\u0441\u043a\u043b\u044e\u0447\u0435\u043d\u043e: ${result.excluded.length}`,
+    `🔗 Пост: ${result.postUrl || "не указан"}`,
   ];
 
-  const filterLines = buildEnabledFilterLines(result);
-  if (filterLines.length) {
-    lines.push("", "\u0424\u0438\u043b\u044c\u0442\u0440\u044b:", ...filterLines);
+  if (result.prizeText) {
+    lines.push(`🎁 Приз: ${result.prizeText}`);
   }
 
-  lines.push("", "\u041f\u043e\u0431\u0435\u0434\u0438\u0442\u0435\u043b\u0438:");
+  lines.push("", result.winners.length > 1 ? "🏆 Победители:" : "🏆 Победитель:");
 
   if (result.winners.length) {
     result.winners.forEach((winner, index) => {
-      lines.push(`${index + 1}. ${winner.name} - id${winner.id} - ${winner.profileUrl}`);
+      lines.push(`${index + 1}. ${winner.name} - ${winner.profileUrl}`);
     });
   } else {
-    lines.push("\u041f\u043e\u043a\u0430 \u043d\u0435\u0442 \u043f\u043e\u0431\u0435\u0434\u0438\u0442\u0435\u043b\u0435\u0439");
+    lines.push("Пока не выбран");
   }
+
+  lines.push("", "✨ Подведено с помощью: Рандомайзер для конкурсов");
 
   return lines.join("\n");
 }
@@ -1750,7 +1747,7 @@ function drawMetaChip(ctx, x, y, text, width = null) {
 
 function shortenText(value, maxLength) {
   const text = String(value || "");
-  return text.length > maxLength ? `${text.slice(0, maxLength - 1)}…` : text;
+  return text.length > maxLength ? `${text.slice(0, Math.max(0, maxLength - 3))}...` : text;
 }
 
 function drawWinnerBadge(ctx, x, y, index) {

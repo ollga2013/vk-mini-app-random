@@ -70,6 +70,11 @@
             <span>Победителей</span>
             <input id="winners-count" type="number" min="1" max="10000" value="3" />
           </label>
+
+          <label class="field">
+            <span>Приз</span>
+            <input id="prize-text" type="text" placeholder="Например: сертификат на 5000 ₽" autocomplete="off" />
+          </label>
         </article>
 
         <article class="panel">
@@ -184,7 +189,6 @@
 
           <div class="mini-actions">
             <button class="ghost" id="download-report">Скачать текст</button>
-            <button class="ghost" id="download-json">Скачать JSON</button>
             <button class="primary" data-action="download-image">Скачать картинку</button>
           </div>
         </article>
@@ -205,6 +209,6 @@
 
     <canvas id="export-canvas" class="hidden"></canvas>
     <script src="https://unpkg.com/@vkontakte/vk-bridge/dist/browser.min.js"></script>
-    <script type="module" src="./app.js?v=20260604-total-count-no-logs"></script>
+    <script type="module" src="./app.js?v=20260604-prize-report"></script>
   </body>
 </html>
