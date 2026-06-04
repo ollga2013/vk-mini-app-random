@@ -71,10 +71,10 @@
             <input id="winners-count" type="number" min="1" max="10000" value="3" />
           </label>
 
-          <label class="field">
-            <span>Приз</span>
-            <input id="prize-text" type="text" placeholder="Например: сертификат на 5000 ₽" autocomplete="off" />
-          </label>
+          <div class="field">
+            <span>Призы по местам</span>
+            <div class="prize-list" id="prize-list"></div>
+          </div>
         </article>
 
         <article class="panel">
@@ -209,6 +209,6 @@
 
     <canvas id="export-canvas" class="hidden"></canvas>
     <script src="https://unpkg.com/@vkontakte/vk-bridge/dist/browser.min.js"></script>
-    <script type="module" src="./app.js?v=20260604-prize-report"></script>
+    <script type="module" src="./app.js?v=20260604-place-prizes"></script>
   </body>
 </html>

@@ -6,6 +6,7 @@ const LOCAL_API_HOSTS = new Set(["localhost", "127.0.0.1", ""]);
 const MAX_IMPORT_ITEMS = 50000;
 const MAX_WINNERS = 10000;
 const BRIDGE_MAX_CONCURRENT = 4;
+const MAX_PRIZE_FIELDS = 50;
 const BRIDGE_CONTEST_KEYS = [
   "конкурс",
   "розыгрыш",
@@ -30,7 +31,7 @@ const els = {
   modeBox: $("#entry-mode"),
   pinnedPost: $("#pinned-post"),
   winnersCount: $("#winners-count"),
-  prizeText: $("#prize-text"),
+  prizeList: $("#prize-list"),
   participantsCount: $("#participants-count"),
   filters: $("#filters"),
   maxContests: $("#max-contests"),
@@ -177,10 +178,13 @@ function bindEvents() {
 
   [
     els.pinnedPost,
-    els.winnersCount,
-    els.prizeText,
     els.maxContests,
   ].forEach((node) => node.addEventListener("input", persistAndRefresh));
+  els.winnersCount.addEventListener("input", () => {
+    renderPrizeInputs();
+    persistAndRefresh();
+  });
+  els.prizeList.addEventListener("input", persistAndRefresh);
 
   els.postUrl.addEventListener("input", () => {
     importedParticipants = null;
@@ -1048,7 +1052,7 @@ function hydrateState() {
   els.postUrl.value = "";
   els.pinnedPost.checked = lastState.pinnedPost ?? true;
   els.winnersCount.value = String(lastState.winnersCount ?? 3);
-  els.prizeText.value = lastState.prizeText ?? "";
+  renderPrizeInputs(normalizePrizeList(lastState.prizes, lastState.prizeText));
   els.importScanDepth.value = String(lastState.importScanDepth ?? 60);
   els.maxContests.value = String(lastState.maxContests ?? 3);
   els.participants.value = lastState.participantsText ?? "";
@@ -1084,6 +1088,29 @@ function updatePostMemoryControls() {
   els.restorePostUrl.title = rememberedPostUrl || "";
 }
 
+function normalizePrizeList(prizes, legacyPrizeText = "") {
+  const list = Array.isArray(prizes) ? prizes.map((item) => String(item || "").trim()) : [];
+  if (!list.length && legacyPrizeText) list.push(String(legacyPrizeText).trim());
+  return list;
+}
+
+function getCurrentPrizes() {
+  return $$(".prize-input", els.prizeList).map((input) => input.value.trim());
+}
+
+function renderPrizeInputs(prizes = getCurrentPrizes()) {
+  const count = Math.min(MAX_PRIZE_FIELDS, clampInt(els.winnersCount.value, 1, MAX_WINNERS, 3));
+  els.prizeList.innerHTML = Array.from({ length: count }, (_, index) => {
+    const place = index + 1;
+    return `
+      <label class="prize-row">
+        <span>${place} место</span>
+        <input class="prize-input" type="text" value="${escapeAttr(prizes[index] || "")}" placeholder="Приз для ${place} места" autocomplete="off" />
+      </label>
+    `;
+  }).join("");
+}
+
 function saveState() {
   const state = collectState();
   const { participantsData, importMeta, ...persistable } = state;
@@ -1111,6 +1138,7 @@ function loadState() {
       pinnedPost: true,
       winnersCount: 3,
       prizeText: "",
+      prizes: [],
       importScanDepth: 60,
       filters: {
         requireAvatar: false,
@@ -1135,6 +1163,7 @@ function loadState() {
       pinnedPost: true,
       winnersCount: 3,
       prizeText: "",
+      prizes: [],
       importScanDepth: 60,
       filters: {
         requireAvatar: false,
@@ -1158,13 +1187,15 @@ function collectState() {
   $$('#filters input[type="checkbox"]').forEach((box) => {
     filters[box.dataset.filter] = box.checked;
   });
+  const prizes = getCurrentPrizes();
 
   return {
     postUrl: els.postUrl.value.trim(),
     entryModes: entryModes.length ? entryModes : ["repost", "comment", "like"],
     pinnedPost: els.pinnedPost.checked,
     winnersCount: clampInt(els.winnersCount.value, 1, MAX_WINNERS, 3),
-    prizeText: els.prizeText.value.trim(),
+    prizeText: prizes.find(Boolean) || "",
+    prizes,
     importScanDepth: clampInt(els.importScanDepth.value, 10, 200, 60),
     filters,
     maxContests: clampInt(els.maxContests.value, 0, 1000, 3),
@@ -1514,7 +1545,6 @@ function buildResultMetaLabels(result) {
   const labels = [];
   const modeText = result.requiredActions.map((action) => actionLabels[action]).join(", ");
   if (modeText) labels.push(`\u0423\u0441\u043b\u043e\u0432\u0438\u0435: ${modeText}`);
-  if (result.prizeText) labels.push(`\u041f\u0440\u0438\u0437: ${shortenText(result.prizeText, 64)}`);
   if (result.pinnedPost) labels.push("\u041f\u043e\u0441\u0442 \u0437\u0430\u043a\u0440\u0435\u043f\u043b\u0435\u043d");
   return labels;
 }
@@ -1539,15 +1569,12 @@ function buildReportText(result) {
     `🔗 Пост: ${result.postUrl || "не указан"}`,
   ];
 
-  if (result.prizeText) {
-    lines.push(`🎁 Приз: ${result.prizeText}`);
-  }
-
   lines.push("", result.winners.length > 1 ? "🏆 Победители:" : "🏆 Победитель:");
 
   if (result.winners.length) {
     result.winners.forEach((winner, index) => {
-      lines.push(`${index + 1}. ${winner.name} - ${winner.profileUrl}`);
+      const prize = getPrizeForPlace(result, index);
+      lines.push(`${index + 1}. ${winner.name} - ${winner.profileUrl}${prize ? ` - 🎁 ${prize}` : ""}`);
     });
   } else {
     lines.push("Пока не выбран");
@@ -1556,6 +1583,11 @@ function buildReportText(result) {
   lines.push("", "✨ Подведено с помощью: Рандомайзер для конкурсов");
 
   return lines.join("\n");
+}
+
+function getPrizeForPlace(result, index) {
+  const prizes = Array.isArray(result.prizes) ? result.prizes : [];
+  return String(prizes[index] || (!index ? result.prizeText || "" : "")).trim();
 }
 
 function tallyReasons(excluded) {
@@ -1605,7 +1637,7 @@ function downloadText(filename, text) {
 async function downloadResultImage(result) {
   const canvas = els.canvas;
   canvas.width = 1600;
-  canvas.height = Math.max(1120, 630 + result.winners.length * 178 + 140);
+  canvas.height = Math.max(1120, 650 + result.winners.length * 210 + 140);
   const ctx = canvas.getContext("2d");
 
   try {
@@ -1674,29 +1706,37 @@ async function drawResultCanvas(ctx, result, allowRemoteImages) {
   ctx.fillText("победителей", statsX + 250, panelY + 124);
 
   const winnersPanelY = panelY + 220;
-  drawPanel(ctx, 70, winnersPanelY, w - 140, Math.max(430, result.winners.length * 170 + 70), "Победители");
+  const rowHeight = 172;
+  const rowStep = 202;
+  drawPanel(ctx, 70, winnersPanelY, w - 140, Math.max(430, result.winners.length * rowStep + 70), "Победители");
   const startY = winnersPanelY + 85;
   for (let i = 0; i < result.winners.length; i += 1) {
     const winner = result.winners[i];
-    const rowY = startY + i * 170;
+    const prize = getPrizeForPlace(result, i);
+    const rowY = startY + i * rowStep;
     ctx.fillStyle = "#ffffff";
-    roundRect(ctx, 100, rowY, w - 200, 140, 24);
+    roundRect(ctx, 100, rowY, w - 200, rowHeight, 24);
     ctx.fill();
     ctx.strokeStyle = "rgba(28,57,91,0.12)";
     ctx.stroke();
 
-    await drawAvatar(ctx, winner, 128, rowY + 18, 104, allowRemoteImages);
+    await drawAvatar(ctx, winner, 128, rowY + 24, 104, allowRemoteImages);
     ctx.fillStyle = "#10233d";
     ctx.font = "800 30px Manrope, sans-serif";
-    ctx.fillText(winner.name, 260, rowY + 60);
+    ctx.fillText(winner.name, 260, rowY + 56);
     ctx.font = "600 20px Manrope, sans-serif";
     ctx.fillStyle = "#5f708a";
-    ctx.fillText(`id${winner.id}`, 260, rowY + 96);
-    ctx.fillText(shortUrl(winner.profileUrl), 260, rowY + 124);
-    drawWinnerBadge(ctx, w - 270, rowY + 48, i + 1);
+    ctx.fillText(`id${winner.id}`, 260, rowY + 90);
+    ctx.fillText(shortUrl(winner.profileUrl), 260, rowY + 118);
+    if (prize) {
+      ctx.fillStyle = "#1763c4";
+      ctx.font = "700 20px Manrope, sans-serif";
+      ctx.fillText(`Приз: ${shortenText(prize, 72)}`, 260, rowY + 148);
+    }
+    drawWinnerBadge(ctx, w - 270, rowY + 62, i + 1);
   }
 
-  const footerY = Math.max(1110, startY + result.winners.length * 170 + 20);
+  const footerY = Math.max(1110, startY + result.winners.length * rowStep + 20);
   ctx.fillStyle = "#5f708a";
   ctx.font = "600 19px Manrope, sans-serif";
   ctx.fillText(`Рандомайзер для конкурсов. Участников всего: ${result.totalParticipants}.`, 70, footerY);
@@ -1710,7 +1750,7 @@ function drawMetaChips(ctx, x, y, maxWidth, labels) {
 
   labels.forEach((label) => {
     ctx.font = "700 20px Manrope, sans-serif";
-    const width = Math.min(maxWidth, Math.max(210, ctx.measureText(label).width + 34));
+    const width = Math.min(maxWidth, Math.max(96, ctx.measureText(label).width + 34));
     if (cursorX > x && cursorX + width > x + maxWidth) {
       cursorX = x;
       cursorY += height + gap;
@@ -1736,7 +1776,7 @@ function drawPanel(ctx, x, y, width, height, title) {
 
 function drawMetaChip(ctx, x, y, text, width = null) {
   ctx.font = "700 20px Manrope, sans-serif";
-  const chipWidth = width ?? Math.max(250, ctx.measureText(text).width + 34);
+  const chipWidth = width ?? Math.max(96, ctx.measureText(text).width + 34);
   ctx.fillStyle = "rgba(38,128,235,0.1)";
   roundRect(ctx, x, y, chipWidth, 46, 999);
   ctx.fill();

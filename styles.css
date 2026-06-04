@@ -265,6 +265,24 @@ button:disabled {
   margin-top: 2px;
 }
 
+.prize-list {
+  display: grid;
+  gap: 8px;
+}
+
+.prize-row {
+  display: grid;
+  grid-template-columns: 78px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+}
+
+.prize-row span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
 .field > span {
   font-size: 13px;
   color: var(--muted);
@@ -611,6 +629,7 @@ textarea:focus {
 
   .two-col,
   .stats,
+  .prize-row,
   .winner-card {
     grid-template-columns: 1fr;
   }
