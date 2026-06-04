@@ -193,7 +193,7 @@ async function importParticipants({ postUrl, entryModes, scanDepth, strictPrizeH
     ? await validateRepostAccess(USER_TOKEN, ownerId, postId)
     : envTokenDiagnostics.userTokenValid;
   const hasRepostAccess = requestRepostAccess || envRepostAccess;
-  const sourceMaps = await collectSourceMaps(ownerId, postId, selectedModes);
+  const { sourceMaps, sourceCounts } = await collectSourceMaps(ownerId, postId, selectedModes);
   return buildParticipants({
     postUrl,
     ownerId,
@@ -206,6 +206,8 @@ async function importParticipants({ postUrl, entryModes, scanDepth, strictPrizeH
       repostImportAvailable: hasRepostAccess,
       liveUserTokenUsed: requestUserTokenValid,
       liveUserRepostAccess: requestRepostAccess,
+      sourceCounts,
+      totalParticipants: totalFromSourceCounts(sourceCounts, sourceMaps.size),
       note:
         selectedModes.includes("repost") && !hasRepostAccess
           ? "Для репостов нужен живой user token с wall-правами. Сейчас repost-часть недоступна."
@@ -309,12 +311,14 @@ async function buildParticipants({ postUrl, ownerId, postId, selectedModes, sour
 
 async function collectSourceMaps(ownerId, postId, selectedModes) {
   const map = new Map();
+  const sourceCounts = {};
   const tasks = [];
 
   if (selectedModes.includes("repost")) {
     tasks.push(async () => {
-      const ids = await fetchReposters(ownerId, postId);
-      ids.forEach((id) => {
+      const data = await fetchReposters(ownerId, postId);
+      sourceCounts.repost = data.total;
+      data.ids.forEach((id) => {
         const entry = ensureAction(map, id);
         entry.repost = true;
       });
@@ -323,8 +327,9 @@ async function collectSourceMaps(ownerId, postId, selectedModes) {
 
   if (selectedModes.includes("comment")) {
     tasks.push(async () => {
-      const ids = await fetchCommenters(ownerId, postId);
-      ids.forEach((id) => {
+      const data = await fetchCommenters(ownerId, postId);
+      sourceCounts.comment = data.total;
+      data.ids.forEach((id) => {
         const entry = ensureAction(map, id);
         entry.comment = true;
       });
@@ -333,8 +338,9 @@ async function collectSourceMaps(ownerId, postId, selectedModes) {
 
   if (selectedModes.includes("like")) {
     tasks.push(async () => {
-      const ids = await fetchLikers(ownerId, postId);
-      ids.forEach((id) => {
+      const data = await fetchLikers(ownerId, postId);
+      sourceCounts.like = data.total;
+      data.ids.forEach((id) => {
         const entry = ensureAction(map, id);
         entry.like = true;
       });
@@ -342,7 +348,11 @@ async function collectSourceMaps(ownerId, postId, selectedModes) {
   }
 
   await runLimited(tasks, MAX_CONCURRENT);
-  return map;
+  return { sourceMaps: map, sourceCounts };
+}
+
+function totalFromSourceCounts(sourceCounts, fallback) {
+  return Math.max(fallback, ...Object.values(sourceCounts || {}).filter(Number.isFinite));
 }
 
 function ensureAction(map, id) {
@@ -355,14 +365,16 @@ function ensureAction(map, id) {
 
 async function fetchReposters(ownerId, postId) {
   const ids = new Set();
+  const totals = [];
 
   try {
-    const repostIds = await fetchWallReposters(ownerId, postId);
-    repostIds.forEach((id) => ids.add(id));
+    const repostData = await fetchWallReposters(ownerId, postId);
+    totals.push(repostData.total);
+    repostData.ids.forEach((id) => ids.add(id));
   } catch {}
 
   try {
-    const copyIds = await paginateIds(async (offset, count) => {
+    const copyData = await paginateIdsDetailed(async (offset, count) => {
       const data = await vkCall("likes.getList", {
         type: "post",
         owner_id: ownerId,
@@ -371,17 +383,20 @@ async function fetchReposters(ownerId, postId) {
         count,
         offset,
       });
-      return data.items || [];
+      return data;
     }, 100, MAX_IMPORT_ITEMS);
-    copyIds.forEach((id) => ids.add(id));
+    totals.push(copyData.total);
+    copyData.ids.forEach((id) => ids.add(id));
   } catch {}
 
-  return Array.from(ids);
+  const list = Array.from(ids);
+  return { ids: list, total: Math.max(list.length, ...totals.filter(Number.isFinite)) };
 }
 
 async function fetchWallReposters(ownerId, postId, pageSize = 100, maxItems = MAX_IMPORT_ITEMS) {
   const results = [];
   let offset = 0;
+  let total = null;
   while (results.length < maxItems) {
     const count = Math.min(pageSize, maxItems - results.length);
     const data = await vkCall("wall.getReposts", {
@@ -390,17 +405,19 @@ async function fetchWallReposters(ownerId, postId, pageSize = 100, maxItems = MA
       count,
       offset,
     });
+    if (Number.isFinite(data?.count)) total = data.count;
     const items = Array.isArray(data?.items) ? data.items : [];
     if (!items.length) break;
     results.push(...extractRepostOwnerIds({ items }));
     if (items.length < count) break;
     offset += items.length;
   }
-  return uniqPositive(results).slice(0, maxItems);
+  const ids = uniqPositive(results).slice(0, maxItems);
+  return { ids, total: Math.max(ids.length, total || 0) };
 }
 
 async function fetchLikers(ownerId, postId) {
-  return paginateIds(async (offset, count) => {
+  return paginateIdsDetailed(async (offset, count) => {
     const data = await vkCall("likes.getList", {
       type: "post",
       owner_id: ownerId,
@@ -409,7 +426,7 @@ async function fetchLikers(ownerId, postId) {
       count,
       offset,
     });
-    return data.items || [];
+    return data;
   }, 100, MAX_IMPORT_ITEMS);
 }
 
@@ -417,6 +434,7 @@ async function fetchCommenters(ownerId, postId) {
   const results = [];
   let offset = 0;
   const count = 100;
+  let total = null;
   while (offset < MAX_IMPORT_ITEMS) {
     const data = await vkCall("wall.getComments", {
       owner_id: ownerId,
@@ -425,6 +443,7 @@ async function fetchCommenters(ownerId, postId) {
       offset,
       sort: "desc",
     });
+    if (Number.isFinite(data.count)) total = data.count;
     const items = data.items || [];
     results.push(
       ...items
@@ -434,7 +453,8 @@ async function fetchCommenters(ownerId, postId) {
     if (items.length < count || (Number.isFinite(data.count) && offset + items.length >= data.count)) break;
     offset += count;
   }
-  return uniqPositive(results).slice(0, MAX_IMPORT_ITEMS);
+  const ids = uniqPositive(results).slice(0, MAX_IMPORT_ITEMS);
+  return { ids, total: Math.max(ids.length, total || 0) };
 }
 
 function extractRepostOwnerIds(response) {
@@ -600,17 +620,25 @@ function containsAny(text, keywords) {
 }
 
 async function paginateIds(fetchPage, pageSize = 100, maxItems = MAX_IMPORT_ITEMS) {
+  return (await paginateIdsDetailed(fetchPage, pageSize, maxItems)).ids;
+}
+
+async function paginateIdsDetailed(fetchPage, pageSize = 100, maxItems = MAX_IMPORT_ITEMS) {
   const results = [];
   let offset = 0;
-  while (results.length < maxItems) {
-    const count = Math.min(pageSize, maxItems - results.length);
-    const page = await fetchPage(offset, count);
+  let total = null;
+  while (offset < maxItems) {
+    const count = Math.min(pageSize, maxItems - offset);
+    const data = await fetchPage(offset, count);
+    if (Number.isFinite(data?.count)) total = data.count;
+    const page = Array.isArray(data) ? data : data?.items || [];
     if (!page.length) break;
     results.push(...page);
-    if (page.length < count) break;
+    if (page.length < count || (Number.isFinite(total) && offset + page.length >= total)) break;
     offset += page.length;
   }
-  return uniqPositive(results).slice(0, maxItems);
+  const ids = uniqPositive(results).slice(0, maxItems);
+  return { ids, total: Math.max(ids.length, total || 0) };
 }
 
 function uniqPositive(items) {

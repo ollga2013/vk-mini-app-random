@@ -146,6 +146,7 @@ const sampleTextParticipants = sampleParticipants.map(({ avatarUrl, ...rest }) =
 let demoMode = false;
 let demoParticipants = [];
 let importedParticipants = null;
+let importedMeta = null;
 let importServerOk = false;
 let autoImportTimer = null;
 let importRequestSeq = 0;
@@ -182,6 +183,7 @@ function bindEvents() {
 
   els.postUrl.addEventListener("input", () => {
     importedParticipants = null;
+    importedMeta = null;
     updatePostMemoryControls();
     persistAndRefresh();
   });
@@ -189,12 +191,14 @@ function bindEvents() {
     const postUrl = getRememberedPostUrl();
     if (!postUrl) return;
     importedParticipants = null;
+    importedMeta = null;
     els.postUrl.value = postUrl;
     updatePostMemoryControls();
     persistAndRefresh();
   });
   els.clearPostUrl.addEventListener("click", () => {
     importedParticipants = null;
+    importedMeta = null;
     els.postUrl.value = "";
     updatePostMemoryControls();
     persistAndRefresh();
@@ -205,6 +209,7 @@ function bindEvents() {
     demoMode = false;
     demoParticipants = [];
     importedParticipants = null;
+    importedMeta = null;
     persistAndRefresh();
   });
 
@@ -212,6 +217,7 @@ function bindEvents() {
     demoMode = true;
     demoParticipants = sampleParticipants;
     importedParticipants = null;
+    importedMeta = null;
     els.participants.value = "";
     persistAndRefresh();
   });
@@ -220,6 +226,7 @@ function bindEvents() {
     demoMode = false;
     demoParticipants = [];
     importedParticipants = null;
+    importedMeta = null;
     els.participants.value = JSON.stringify(sampleTextParticipants, null, 2);
     persistAndRefresh();
   });
@@ -228,6 +235,7 @@ function bindEvents() {
     demoMode = false;
     demoParticipants = [];
     importedParticipants = null;
+    importedMeta = null;
     els.participants.value = "";
     persistAndRefresh();
   });
@@ -382,6 +390,7 @@ async function importFromVk() {
     demoMode = false;
     demoParticipants = [];
     importedParticipants = payload.participants ?? [];
+    importedMeta = payload.meta ?? null;
     els.participants.value = JSON.stringify(payload.participants ?? [], null, 2);
     persistAndRefresh();
     setApiStatus(`Импорт готов · ${payload.participants?.length ?? 0} участников`);
@@ -458,6 +467,7 @@ async function importFromVkFresh() {
     demoMode = false;
     demoParticipants = [];
     importedParticipants = payload.participants ?? [];
+    importedMeta = payload.meta ?? null;
     els.participants.value = JSON.stringify(payload.participants ?? [], null, 2);
     persistAndRefresh();
     const note = payload?.meta?.note ? ` · ${payload.meta.note}` : "";
@@ -567,20 +577,22 @@ async function importFromVkBridge(state, userToken) {
 
   const actionMap = new Map();
   const modes = state.entryModes.includes("all") ? ["repost", "comment", "like"] : state.entryModes;
+  const sourceCounts = {};
   const tasks = [];
 
   if (modes.includes("repost")) {
     tasks.push(async () => {
       setApiStatus("Собираю репосты из VK...");
-      const ids = await getBridgeRepostIds(parsed, userToken);
-      ids.forEach((id) => ensureActionRow(actionMap, id).repost = true);
+      const data = await getBridgeRepostData(parsed, userToken);
+      sourceCounts.repost = data.total;
+      data.ids.forEach((id) => ensureActionRow(actionMap, id).repost = true);
     });
   }
 
   if (modes.includes("comment")) {
     tasks.push(async () => {
       setApiStatus("Собираю комментарии из VK...");
-      const ids = await paginateVkBridgeIds((offset, count) =>
+      const data = await paginateVkBridgeIdsDetailed((offset, count) =>
         vkApiCall("wall.getComments", {
           owner_id: parsed.ownerId,
           post_id: parsed.postId,
@@ -589,14 +601,15 @@ async function importFromVkBridge(state, userToken) {
           sort: "desc",
         }, userToken),
       );
-      ids.forEach((id) => ensureActionRow(actionMap, id).comment = true);
+      sourceCounts.comment = data.total;
+      data.ids.forEach((id) => ensureActionRow(actionMap, id).comment = true);
     });
   }
 
   if (modes.includes("like")) {
     tasks.push(async () => {
       setApiStatus("Собираю лайки из VK...");
-      const ids = await paginateVkBridgeIds((offset, count) =>
+      const data = await paginateVkBridgeIdsDetailed((offset, count) =>
         vkApiCall("likes.getList", {
           type: "post",
           owner_id: parsed.ownerId,
@@ -606,7 +619,8 @@ async function importFromVkBridge(state, userToken) {
           offset,
         }, userToken),
       );
-      ids.forEach((id) => ensureActionRow(actionMap, id).like = true);
+      sourceCounts.like = data.total;
+      data.ids.forEach((id) => ensureActionRow(actionMap, id).like = true);
     });
   }
 
@@ -617,6 +631,7 @@ async function importFromVkBridge(state, userToken) {
     parsed,
     actionMap,
     selectedModes: modes,
+    sourceCounts,
     userToken,
   });
 }
@@ -625,7 +640,7 @@ function canUseLocalApi() {
   return LOCAL_API_HOSTS.has(window.location.hostname) && window.location.port === "4173";
 }
 
-async function buildBridgeImportPayload({ state, parsed, actionMap, selectedModes, userToken }) {
+async function buildBridgeImportPayload({ state, parsed, actionMap, selectedModes, sourceCounts = {}, userToken }) {
   const ids = Array.from(actionMap.keys());
   if (!ids.length) {
     return {
@@ -636,6 +651,8 @@ async function buildBridgeImportPayload({ state, parsed, actionMap, selectedMode
         postId: parsed.postId,
         selectedModes,
         importedCount: 0,
+        sourceCounts,
+        totalParticipants: totalFromSourceCounts(sourceCounts, 0),
         clientBridgeImport: true,
         note: "Участники по выбранным условиям не найдены.",
       },
@@ -679,6 +696,8 @@ async function buildBridgeImportPayload({ state, parsed, actionMap, selectedMode
       postId: parsed.postId,
       selectedModes,
       importedCount: participants.length,
+      sourceCounts,
+      totalParticipants: totalFromSourceCounts(sourceCounts, participants.length),
       scanDepth: state.importScanDepth,
       clientBridgeImport: true,
       repostImportAvailable: true,
@@ -688,8 +707,12 @@ async function buildBridgeImportPayload({ state, parsed, actionMap, selectedMode
 }
 
 async function getBridgeRepostIds(parsed, userToken) {
+  return (await getBridgeRepostData(parsed, userToken)).ids;
+}
+
+async function getBridgeRepostData(parsed, userToken) {
   const [copiesIds, wallIds] = await Promise.all([
-    paginateVkBridgeIds((offset, count) =>
+    paginateVkBridgeIdsDetailed((offset, count) =>
       vkApiCall("likes.getList", {
         type: "post",
         owner_id: parsed.ownerId,
@@ -702,14 +725,16 @@ async function getBridgeRepostIds(parsed, userToken) {
     fetchBridgeWallRepostIds(parsed, userToken),
   ]);
 
-  return Array.from(new Set([...copiesIds, ...wallIds]));
+  const ids = Array.from(new Set([...copiesIds.ids, ...wallIds.ids]));
+  return { ids, total: Math.max(ids.length, copiesIds.total, wallIds.total) };
 }
 
 async function fetchBridgeWallRepostIds(parsed, userToken, pageSize = 100, maxItems = MAX_IMPORT_ITEMS) {
   const results = [];
   let offset = 0;
-  while (results.length < maxItems) {
-    const count = Math.min(pageSize, maxItems - results.length);
+  let total = null;
+  while (offset < maxItems) {
+    const count = Math.min(pageSize, maxItems - offset);
     const data = await safeVkApiCall("wall.getReposts", {
       owner_id: parsed.ownerId,
       post_id: parsed.postId,
@@ -717,16 +742,18 @@ async function fetchBridgeWallRepostIds(parsed, userToken, pageSize = 100, maxIt
       offset,
     }, userToken);
     if (!data) break;
+    if (Number.isFinite(data.count)) total = data.count;
     const items = Array.isArray(data.items) ? data.items : [];
     if (!items.length) break;
     const pageIds = items
       .map((item) => Number(item.owner_id))
       .filter((id) => Number.isInteger(id) && id > 0);
     results.push(...pageIds);
-    if (items.length < count) break;
+    if (items.length < count || (Number.isFinite(total) && offset + items.length >= total)) break;
     offset += items.length;
   }
-  return Array.from(new Set(results)).slice(0, maxItems);
+  const ids = Array.from(new Set(results)).slice(0, maxItems);
+  return { ids, total: Math.max(ids.length, total || 0) };
 }
 
 async function getBridgeUsers(ids, userToken) {
@@ -969,18 +996,25 @@ function containsBridgeContestText(text) {
 }
 
 async function paginateVkBridgeIds(fetchPage, pageSize = 100, maxItems = MAX_IMPORT_ITEMS) {
+  return (await paginateVkBridgeIdsDetailed(fetchPage, pageSize, maxItems)).ids;
+}
+
+async function paginateVkBridgeIdsDetailed(fetchPage, pageSize = 100, maxItems = MAX_IMPORT_ITEMS) {
   const results = [];
   let offset = 0;
+  let total = null;
   while (offset < maxItems) {
     const count = Math.min(pageSize, maxItems - offset);
     const data = await fetchPage(offset, count);
+    if (Number.isFinite(data?.count)) total = data.count;
     const page = Array.isArray(data) ? data : data?.items || [];
     if (!page.length) break;
     results.push(...extractVkIdsFromPage(page));
     offset += page.length;
-    if (page.length < count || (Number.isFinite(data?.count) && offset >= data.count)) break;
+    if (page.length < count || (Number.isFinite(total) && offset >= total)) break;
   }
-  return Array.from(new Set(results.filter((id) => Number.isInteger(id) && id > 0))).slice(0, maxItems);
+  const ids = Array.from(new Set(results.filter((id) => Number.isInteger(id) && id > 0))).slice(0, maxItems);
+  return { ids, total: Math.max(ids.length, total || 0) };
 }
 
 function extractVkIdsFromPage(page) {
@@ -1055,7 +1089,7 @@ function updatePostMemoryControls() {
 
 function saveState() {
   const state = collectState();
-  const { participantsData, ...persistable } = state;
+  const { participantsData, importMeta, ...persistable } = state;
   persistable.recentPostUrl = state.postUrl || getRememberedPostUrl();
   persistable.postUrl = "";
   if (importedParticipants) {
@@ -1136,6 +1170,7 @@ function collectState() {
     maxContests: clampInt(els.maxContests.value, 0, 1000, 3),
     participantsText: demoMode || importedParticipants ? "" : els.participants.value,
     participantsData: demoMode ? demoParticipants : importedParticipants ?? parseParticipants(els.participants.value),
+    importMeta: importedParticipants ? importedMeta : null,
   };
 }
 
@@ -1181,8 +1216,24 @@ function recompute() {
     excluded,
     winners,
     reasonCounts,
+    totalParticipants: getTotalParticipantsCount({ ...state, participants: evaluated }),
     requiredActions,
   };
+}
+
+function getTotalParticipantsCount(result) {
+  const meta = result.importMeta || {};
+  const sourceCounts = meta.sourceCounts && typeof meta.sourceCounts === "object" ? Object.values(meta.sourceCounts) : [];
+  return Math.max(
+    result.participants?.length || 0,
+    toNum(meta.totalParticipants) || 0,
+    toNum(meta.importedCount) || 0,
+    ...sourceCounts.map((value) => toNum(value) || 0),
+  );
+}
+
+function totalFromSourceCounts(sourceCounts, fallback) {
+  return Math.max(fallback, ...Object.values(sourceCounts || {}).filter(Number.isFinite));
 }
 
 function normalizeParticipant(raw, index) {
@@ -1384,7 +1435,7 @@ function evaluateParticipant(participant, state, requiredActions) {
 }
 
 function render(result) {
-  els.participantsCount.textContent = String(result.participants.length);
+  els.participantsCount.textContent = String(result.totalParticipants);
   els.eligibleCount.textContent = String(result.eligible.length);
   els.excludedCount.textContent = String(result.excluded.length);
 
@@ -1430,6 +1481,7 @@ function renderWinners(result) {
 }
 
 function renderAudit(result) {
+  if (!els.auditLog) return;
   const reasons = Object.entries(result.reasonCounts).sort((a, b) => b[1] - a[1]);
   if (!reasons.length) {
     els.auditLog.innerHTML = `<div class="empty-state">Исключений нет.</div>`;
@@ -1486,6 +1538,7 @@ function buildReportText(result) {
     `\u041f\u043e\u0441\u0442: ${result.postUrl || "\u043d\u0435 \u0443\u043a\u0430\u0437\u0430\u043d"}`,
     ...buildResultMetaLabels(result),
     `\u041f\u043e\u0431\u0435\u0434\u0438\u0442\u0435\u043b\u0435\u0439: ${result.winners.length}/${result.winnersCount}`,
+    `\u0423\u0447\u0430\u0441\u0442\u043d\u0438\u043a\u043e\u0432: ${result.totalParticipants}`,
     `\u0414\u043e\u043f\u0443\u0449\u0435\u043d\u043e: ${result.eligible.length}`,
     `\u0418\u0441\u043a\u043b\u044e\u0447\u0435\u043d\u043e: ${result.excluded.length}`,
   ];
@@ -1503,14 +1556,6 @@ function buildReportText(result) {
     });
   } else {
     lines.push("\u041f\u043e\u043a\u0430 \u043d\u0435\u0442 \u043f\u043e\u0431\u0435\u0434\u0438\u0442\u0435\u043b\u0435\u0439");
-  }
-
-  lines.push("", "\u041b\u043e\u0433 \u0438\u0441\u043a\u043b\u044e\u0447\u0435\u043d\u0438\u0439:");
-  const reasonEntries = Object.entries(result.reasonCounts).sort((a, b) => b[1] - a[1]);
-  if (reasonEntries.length) {
-    reasonEntries.forEach(([reason, count]) => {
-      lines.push(`- ${reason}: ${count}`);
-    });
   }
 
   return lines.join("\n");
@@ -1624,7 +1669,7 @@ async function drawResultCanvas(ctx, result, allowRemoteImages) {
   drawPanel(ctx, statsX, panelY, statsW, 170, "Статистика");
   ctx.font = "800 42px Manrope, sans-serif";
   ctx.fillStyle = "#10233d";
-  ctx.fillText(String(result.participants.length), statsX + 36, panelY + 88);
+  ctx.fillText(String(result.totalParticipants), statsX + 36, panelY + 88);
   ctx.fillText(`${result.winners.length}/${result.winnersCount}`, statsX + 250, panelY + 88);
   ctx.font = "600 18px Manrope, sans-serif";
   ctx.fillStyle = "#5f708a";
@@ -1657,7 +1702,7 @@ async function drawResultCanvas(ctx, result, allowRemoteImages) {
   const footerY = Math.max(1110, startY + result.winners.length * 170 + 20);
   ctx.fillStyle = "#5f708a";
   ctx.font = "600 19px Manrope, sans-serif";
-  ctx.fillText(`Рандомайзер для конкурсов. Участников всего: ${result.participants.length}.`, 70, footerY);
+  ctx.fillText(`Рандомайзер для конкурсов. Участников всего: ${result.totalParticipants}.`, 70, footerY);
 }
 
 function drawMetaChips(ctx, x, y, maxWidth, labels) {
