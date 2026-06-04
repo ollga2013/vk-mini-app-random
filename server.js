@@ -354,15 +354,7 @@ async function fetchReposters(ownerId, postId) {
   const ids = new Set();
 
   try {
-    const repostIds = await paginateIds(async (offset, count) => {
-      const data = await vkCall("wall.getReposts", {
-        owner_id: ownerId,
-        post_id: postId,
-        count,
-        offset,
-      });
-      return extractRepostOwnerIds(data);
-    }, 100, 10000);
+    const repostIds = await fetchWallReposters(ownerId, postId);
     repostIds.forEach((id) => ids.add(id));
   } catch {}
 
@@ -382,6 +374,26 @@ async function fetchReposters(ownerId, postId) {
   } catch {}
 
   return Array.from(ids);
+}
+
+async function fetchWallReposters(ownerId, postId, pageSize = 100, maxItems = 10000) {
+  const results = [];
+  let offset = 0;
+  while (results.length < maxItems) {
+    const count = Math.min(pageSize, maxItems - results.length);
+    const data = await vkCall("wall.getReposts", {
+      owner_id: ownerId,
+      post_id: postId,
+      count,
+      offset,
+    });
+    const items = Array.isArray(data?.items) ? data.items : [];
+    if (!items.length) break;
+    results.push(...extractRepostOwnerIds({ items }));
+    if (items.length < count) break;
+    offset += items.length;
+  }
+  return uniqPositive(results).slice(0, maxItems);
 }
 
 async function fetchLikers(ownerId, postId) {

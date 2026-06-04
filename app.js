@@ -653,21 +653,34 @@ async function getBridgeRepostIds(parsed, userToken) {
         offset,
       }, userToken),
     ),
-    paginateVkBridgeIds(async (offset, count) => {
-      const data = await safeVkApiCall("wall.getReposts", {
-        owner_id: parsed.ownerId,
-        post_id: parsed.postId,
-        count,
-        offset,
-      }, userToken);
-      if (!data) return [];
-      const itemOwnerIds = (data.items || []).map((item) => Number(item.owner_id)).filter((id) => id > 0);
-      const profileIds = (data.profiles || []).map((profile) => Number(profile.id)).filter((id) => id > 0);
-      return [...itemOwnerIds, ...profileIds];
-    }),
+    fetchBridgeWallRepostIds(parsed, userToken),
   ]);
 
   return Array.from(new Set([...copiesIds, ...wallIds]));
+}
+
+async function fetchBridgeWallRepostIds(parsed, userToken, pageSize = 100, maxItems = 10000) {
+  const results = [];
+  let offset = 0;
+  while (results.length < maxItems) {
+    const count = Math.min(pageSize, maxItems - results.length);
+    const data = await safeVkApiCall("wall.getReposts", {
+      owner_id: parsed.ownerId,
+      post_id: parsed.postId,
+      count,
+      offset,
+    }, userToken);
+    if (!data) break;
+    const items = Array.isArray(data.items) ? data.items : [];
+    if (!items.length) break;
+    const pageIds = items
+      .map((item) => Number(item.owner_id))
+      .filter((id) => Number.isInteger(id) && id > 0);
+    results.push(...pageIds);
+    if (items.length < count) break;
+    offset += items.length;
+  }
+  return Array.from(new Set(results)).slice(0, maxItems);
 }
 
 async function getBridgeUsers(ids, userToken) {
@@ -1356,51 +1369,51 @@ function describeReason(reason) {
 function buildResultMetaLabels(result) {
   const labels = [];
   const modeText = result.requiredActions.map((action) => actionLabels[action]).join(", ");
-  if (modeText) labels.push(`???????: ${modeText}`);
-  if (result.pinnedPost) labels.push("???? ?????????");
+  if (modeText) labels.push(`\u0423\u0441\u043b\u043e\u0432\u0438\u0435: ${modeText}`);
+  if (result.pinnedPost) labels.push("\u041f\u043e\u0441\u0442 \u0437\u0430\u043a\u0440\u0435\u043f\u043b\u0435\u043d");
   return labels;
 }
 
 function buildEnabledFilterLines(result) {
   const lines = [];
-  if (result.filters.requireAvatar) lines.push("- ??????: ???");
-  if (result.filters.requireGroupMember) lines.push("- ????????: ???");
-  if (result.filters.excludeCommunities) lines.push("- ??????????: ?????????");
-  if (result.filters.excludePrivate) lines.push("- ???????? ???????: ?????????");
+  if (result.filters.requireAvatar) lines.push("- \u0410\u0432\u0430\u0442\u0430\u0440: \u0432\u043a\u043b");
+  if (result.filters.requireGroupMember) lines.push("- \u041f\u043e\u0434\u043f\u0438\u0441\u043a\u0430: \u0432\u043a\u043b");
+  if (result.filters.excludeCommunities) lines.push("- \u0421\u043e\u043e\u0431\u0449\u0435\u0441\u0442\u0432\u0430: \u0438\u0441\u043a\u043b\u044e\u0447\u0430\u0442\u044c");
+  if (result.filters.excludePrivate) lines.push("- \u0417\u0430\u043a\u0440\u044b\u0442\u044b\u0435 \u043f\u0440\u043e\u0444\u0438\u043b\u0438: \u0438\u0441\u043a\u043b\u044e\u0447\u0430\u0442\u044c");
   if (result.filters.strictPrizeHunter) {
-    lines.push("- ??????? ???????? ??????????: ???");
-    lines.push(`- ????. ????????? ?? ?????: ${result.maxContests}`);
+    lines.push("- \u0421\u0442\u0440\u043e\u0433\u0430\u044f \u043f\u0440\u043e\u0432\u0435\u0440\u043a\u0430 \u043f\u0440\u0438\u0437\u043e\u043b\u043e\u0432\u043e\u0432: \u0432\u043a\u043b");
+    lines.push(`- \u041c\u0430\u043a\u0441. \u043a\u043e\u043d\u043a\u0443\u0440\u0441\u043e\u0432 \u043d\u0430 \u0441\u0442\u0435\u043d\u0435: ${result.maxContests}`);
   }
   return lines;
 }
 
 function buildReportText(result) {
   const lines = [
-    "????? ?????????",
+    "\u0418\u0442\u043e\u0433\u0438 \u0440\u043e\u0437\u044b\u0433\u0440\u044b\u0448\u0430",
     "",
-    `????: ${result.postUrl || "?? ??????"}`,
+    `\u041f\u043e\u0441\u0442: ${result.postUrl || "\u043d\u0435 \u0443\u043a\u0430\u0437\u0430\u043d"}`,
     ...buildResultMetaLabels(result),
-    `???????????: ${result.winners.length}/${result.winnersCount}`,
-    `????????: ${result.eligible.length}`,
-    `?????????: ${result.excluded.length}`,
+    `\u041f\u043e\u0431\u0435\u0434\u0438\u0442\u0435\u043b\u0435\u0439: ${result.winners.length}/${result.winnersCount}`,
+    `\u0414\u043e\u043f\u0443\u0449\u0435\u043d\u043e: ${result.eligible.length}`,
+    `\u0418\u0441\u043a\u043b\u044e\u0447\u0435\u043d\u043e: ${result.excluded.length}`,
   ];
 
   const filterLines = buildEnabledFilterLines(result);
   if (filterLines.length) {
-    lines.push("", "???????:", ...filterLines);
+    lines.push("", "\u0424\u0438\u043b\u044c\u0442\u0440\u044b:", ...filterLines);
   }
 
-  lines.push("", "??????????:");
+  lines.push("", "\u041f\u043e\u0431\u0435\u0434\u0438\u0442\u0435\u043b\u0438:");
 
   if (result.winners.length) {
     result.winners.forEach((winner, index) => {
-      lines.push(`${index + 1}. ${winner.name} ? id${winner.id} ? ${winner.profileUrl}`);
+      lines.push(`${index + 1}. ${winner.name} - id${winner.id} - ${winner.profileUrl}`);
     });
   } else {
-    lines.push("???? ??? ???????????");
+    lines.push("\u041f\u043e\u043a\u0430 \u043d\u0435\u0442 \u043f\u043e\u0431\u0435\u0434\u0438\u0442\u0435\u043b\u0435\u0439");
   }
 
-  lines.push("", "??? ??????????:");
+  lines.push("", "\u041b\u043e\u0433 \u0438\u0441\u043a\u043b\u044e\u0447\u0435\u043d\u0438\u0439:");
   const reasonEntries = Object.entries(result.reasonCounts).sort((a, b) => b[1] - a[1]);
   if (reasonEntries.length) {
     reasonEntries.forEach(([reason, count]) => {
