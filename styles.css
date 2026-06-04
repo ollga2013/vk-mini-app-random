@@ -158,6 +158,7 @@ h1 {
 #import-vk,
 #check-import,
 .import-panel,
+.manual-panel,
 .anti-advanced {
   display: none;
 }
