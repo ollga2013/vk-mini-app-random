@@ -20,8 +20,6 @@ const BRIDGE_CONTEST_KEYS = [
   "подарок",
 ];
 
-localStorage.removeItem("vk-winner-mini-app:v3");
-
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
 
@@ -157,7 +155,7 @@ initBridge();
 bindEvents();
 hydrateState();
 recomputeAndRender();
-if (canUseLocalApi()) {
+if (canUseBackendApi()) {
   checkImportServer();
 } else {
   setApiStatus(isVkLaunchContext() ? "VK Bridge готов. Нажми «Подвести итоги»." : "Открой приложение внутри VK, чтобы запросить доступ к стене.");
@@ -342,14 +340,14 @@ function scheduleAutoImport(delay = 700) {
 }
 
 async function checkImportServer(silent = false) {
-  if (!canUseLocalApi()) {
+  if (!canUseBackendApi()) {
     importServerOk = false;
     setApiStatus("Опубликованная версия работает через VK Bridge, без /api на GitHub Pages.");
     return { ready: false, skipped: true };
   }
   setApiStatus("Проверяю proxy...");
   try {
-    const response = await fetch("/api/status");
+    const response = await fetch(apiUrl("/api/status"));
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const payload = await response.json();
     importServerOk = Boolean(payload.ready);
@@ -358,7 +356,8 @@ async function checkImportServer(silent = false) {
     if (payload.hasServiceToken) pieces.push("service token");
     const tokenText = pieces.length ? pieces.join(" + ") : "токены не заданы";
     const extra = payload.repostImportAvailable ? "" : " · repost нужен live user token";
-    setApiStatus(payload.ready ? `Proxy готов · ${tokenText}${extra}` : `Proxy без токенов · ${tokenText}${extra}`);
+    const auth = payload.launchAuthRequired ? " · VK auth" : "";
+    setApiStatus(payload.ready ? `Proxy готов · ${tokenText}${extra}${auth}` : `Proxy без токенов · ${tokenText}${extra}${auth}`);
     if (!payload.ready && !silent) {
       setApiStatus("Proxy не готов. Запусти `node server.js`.");
     }
@@ -410,7 +409,7 @@ async function requestVkUserToken() {
     const authPayload = await withTimeout(bridge.send("VKWebAppGetAuthToken", {
       app_id: getVkAppId(),
       scope: VK_IMPORT_SCOPE,
-    }), canUseLocalApi() ? 1500 : 12000, "VK Bridge не ответил. Открой приложение внутри VK.");
+    }), canUseBackendApi() ? 1500 : 12000, "VK Bridge не ответил. Открой приложение внутри VK.");
     const grantedScopes = new Set(String(authPayload?.scope || "").split(",").map((scope) => scope.trim()));
     if (!grantedScopes.has("wall")) {
       throw new Error("VK не выдал доступ wall. Разреши доступ к стене, чтобы проверить репосты.");
@@ -431,7 +430,7 @@ async function requestVkUserToken() {
     });
     return String(payload?.access_token || "");
   } catch (error) {
-    if (!canUseLocalApi()) {
+    if (!canUseBackendApi()) {
       throw error;
     }
     return "";
@@ -445,7 +444,7 @@ async function importFromVkFresh() {
     return;
   }
 
-  if (!canUseLocalApi() && !isVkLaunchContext()) {
+  if (!canUseBackendApi() && !isVkLaunchContext()) {
     setApiStatus("Открой приложение внутри VK. Запрос `wall/groups` работает только в VK Mini App.");
     return;
   }
@@ -459,7 +458,7 @@ async function importFromVkFresh() {
     if (!userToken) {
       throw new Error("VK не ответил на запрос токена. Открой приложение внутри VK Mini App.");
     }
-    const payload = canUseLocalApi()
+    const payload = shouldUseServerImport()
       ? await importFromServer(state, userToken)
       : await importFromVkBridge(state, userToken);
     if (payload.error) throw new Error(payload.error);
@@ -490,7 +489,7 @@ async function requestVkUserTokenFresh() {
         app_id: getVkAppId(),
         scope: VK_IMPORT_SCOPE,
       }),
-      canUseLocalApi() ? 1500 : 12000,
+      canUseBackendApi() ? 1500 : 12000,
       "VK Bridge не ответил. Открой приложение внутри VK.",
     );
     const token = String(authPayload?.access_token || "");
@@ -550,11 +549,11 @@ function withTimeout(promise, timeoutMs, message) {
 }
 
 async function importFromServer(state, userToken) {
-  if (!canUseLocalApi()) {
+  if (!canUseBackendApi()) {
     throw new Error("Backend /api недоступен на GitHub Pages. Открой приложение внутри VK, чтобы импорт шел через VK Bridge.");
   }
 
-  const response = await fetch("/api/import", {
+  const response = await fetch(apiUrl("/api/import"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -563,12 +562,14 @@ async function importFromServer(state, userToken) {
       scanDepth: state.importScanDepth,
       strictPrizeHunter: Boolean(state.filters?.strictPrizeHunter),
       userToken,
+      launchParams: getLaunchParamsString(),
     }),
   });
   const payload = await response.json();
   if (!response.ok || payload.error) {
     throw new Error(payload.error || `HTTP ${response.status}`);
   }
+  rewriteApiImageUrls(payload);
   return payload;
 }
 
@@ -637,8 +638,36 @@ async function importFromVkBridge(state, userToken) {
   });
 }
 
-function canUseLocalApi() {
-  return LOCAL_API_HOSTS.has(window.location.hostname) && window.location.port === "4173";
+function getApiBaseUrl() {
+  return String(window.VK_WINNER_API_BASE_URL || "").replace(/\/+$/, "");
+}
+
+function apiUrl(path) {
+  return `${getApiBaseUrl()}${path}`;
+}
+
+function canUseBackendApi() {
+  if (getApiBaseUrl()) return true;
+  if (window.location.protocol === "file:") return false;
+  return !window.location.hostname.endsWith("github.io");
+}
+
+function shouldUseServerImport() {
+  return canUseBackendApi() && importServerOk;
+}
+
+function getLaunchParamsString() {
+  return getLaunchParams().toString();
+}
+
+function rewriteApiImageUrls(payload) {
+  const apiBaseUrl = getApiBaseUrl();
+  if (!apiBaseUrl || !Array.isArray(payload?.participants)) return;
+  payload.participants.forEach((participant) => {
+    if (participant.avatarUrl?.startsWith("/api/")) {
+      participant.avatarUrl = `${apiBaseUrl}${participant.avatarUrl}`;
+    }
+  });
 }
 
 async function buildBridgeImportPayload({ state, parsed, actionMap, selectedModes, sourceCounts = {}, userToken }) {

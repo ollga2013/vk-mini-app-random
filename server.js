@@ -2,6 +2,7 @@ const http = require("http");
 const fs = require("fs/promises");
 const fsSync = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 const { URL } = require("url");
 const { AsyncLocalStorage } = require("async_hooks");
 
@@ -13,8 +14,10 @@ const PORT = Number(process.env.PORT || 4173);
 const API_VERSION = process.env.VK_API_VERSION || "5.199";
 const USER_TOKEN = String(process.env.VK_USER_TOKEN || process.env.VK_TOKEN || "").trim();
 const SERVICE_TOKEN = String(process.env.VK_SERVICE_TOKEN || "").trim();
+const APP_SECRET = String(process.env.VK_APP_SECRET || "").trim();
 const DEFAULT_SCAN_DEPTH = clampInt(process.env.VK_IMPORT_SCAN_DEPTH, 10, 200, 60);
 const MAX_IMPORT_ITEMS = clampInt(process.env.VK_IMPORT_MAX_ITEMS, 100, 100000, 50000);
+const LAUNCH_MAX_AGE_SECONDS = clampInt(process.env.VK_LAUNCH_MAX_AGE_SECONDS, 0, 604800, 86400);
 const MAX_CONCURRENT = 6;
 const vkTokenContext = new AsyncLocalStorage();
 let tokenDiagnosticsPromise = null;
@@ -87,12 +90,18 @@ async function handleRequest(req, res) {
   const pathname = decodeURIComponent(requestUrl.pathname);
 
   if (pathname.startsWith("/api/")) {
+    if (req.method === "OPTIONS") {
+      sendOptions(res);
+      return;
+    }
+
     if (pathname === "/api/status" && req.method === "GET") {
       const tokenDiagnostics = await getTokenDiagnostics();
       sendJson(res, 200, {
         ready: Boolean(USER_TOKEN || SERVICE_TOKEN),
         hasUserToken: Boolean(USER_TOKEN),
         hasServiceToken: Boolean(SERVICE_TOKEN),
+        launchAuthRequired: Boolean(APP_SECRET),
         userTokenValid: tokenDiagnostics.userTokenValid,
         serviceTokenValid: tokenDiagnostics.serviceTokenValid,
         repostImportAvailable: tokenDiagnostics.userTokenValid,
@@ -103,6 +112,11 @@ async function handleRequest(req, res) {
 
     if (pathname === "/api/import" && req.method === "POST") {
       const body = await readJson(req);
+      const auth = verifyApiLaunchParams(body.launchParams);
+      if (!auth.ok) {
+        sendJson(res, 403, { error: auth.error });
+        return;
+      }
       const postUrl = String(body.postUrl || "").trim();
       const entryModes = Array.isArray(body.entryModes) ? body.entryModes : ["repost"];
       const scanDepth = clampInt(body.scanDepth, 10, 200, DEFAULT_SCAN_DEPTH);
@@ -116,6 +130,11 @@ async function handleRequest(req, res) {
 
     if (pathname === "/api/enrich" && req.method === "POST") {
       const body = await readJson(req);
+      const auth = verifyApiLaunchParams(body.launchParams);
+      if (!auth.ok) {
+        sendJson(res, 403, { error: auth.error });
+        return;
+      }
       const postUrl = String(body.postUrl || "").trim();
       const entryModes = Array.isArray(body.entryModes) ? body.entryModes : ["repost"];
       const scanDepth = clampInt(body.scanDepth, 10, 200, DEFAULT_SCAN_DEPTH);
@@ -755,6 +774,52 @@ async function readJson(req) {
   }
 }
 
+function verifyApiLaunchParams(rawLaunchParams) {
+  if (!APP_SECRET) return { ok: true };
+
+  const params = parseLaunchParams(rawLaunchParams);
+  const sign = params.get("sign");
+  if (!sign) return { ok: false, error: "vk_launch_params_required" };
+
+  if (LAUNCH_MAX_AGE_SECONDS > 0) {
+    const ts = Number(params.get("vk_ts"));
+    const now = Math.floor(Date.now() / 1000);
+    if (!Number.isFinite(ts) || now - ts > LAUNCH_MAX_AGE_SECONDS) {
+      return { ok: false, error: "vk_launch_params_expired" };
+    }
+  }
+
+  const dataCheckString = Array.from(params.entries())
+    .filter(([key]) => key.startsWith("vk_"))
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, value]) => `${key}=${value}`)
+    .join("&");
+
+  if (!dataCheckString) return { ok: false, error: "vk_launch_params_required" };
+
+  const expected = toBase64Url(crypto.createHmac("sha256", APP_SECRET).update(dataCheckString).digest());
+  return timingSafeEqual(sign, expected) ? { ok: true } : { ok: false, error: "vk_launch_params_invalid" };
+}
+
+function parseLaunchParams(rawLaunchParams) {
+  const value = String(rawLaunchParams || "").replace(/^[?#]/, "");
+  return new URLSearchParams(value);
+}
+
+function toBase64Url(buffer) {
+  return Buffer.from(buffer)
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
+}
+
+function timingSafeEqual(left, right) {
+  const leftBuffer = Buffer.from(String(left));
+  const rightBuffer = Buffer.from(String(right));
+  return leftBuffer.length === rightBuffer.length && crypto.timingSafeEqual(leftBuffer, rightBuffer);
+}
+
 function parseWallUrl(url) {
   if (!url) return null;
   const match = String(url).match(/wall(-?\d+)_([0-9]+)/i);
@@ -809,8 +874,19 @@ function sendJson(res, status, payload) {
   res.writeHead(status, {
     "content-type": "application/json;charset=utf-8",
     "access-control-allow-origin": "*",
+    "access-control-allow-methods": "GET,POST,OPTIONS",
+    "access-control-allow-headers": "content-type",
   });
   res.end(JSON.stringify(payload, null, 2));
+}
+
+function sendOptions(res) {
+  res.writeHead(204, {
+    "access-control-allow-origin": "*",
+    "access-control-allow-methods": "GET,POST,OPTIONS",
+    "access-control-allow-headers": "content-type",
+  });
+  res.end();
 }
 
 function sendText(res, status, text) {
