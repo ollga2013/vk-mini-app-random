@@ -362,7 +362,7 @@ async function fetchReposters(ownerId, postId) {
         offset,
       });
       return extractRepostOwnerIds(data);
-    });
+    }, 100, 10000);
     repostIds.forEach((id) => ids.add(id));
   } catch {}
 
@@ -377,7 +377,7 @@ async function fetchReposters(ownerId, postId) {
         offset,
       });
       return data.items || [];
-    });
+    }, 100, 10000);
     copyIds.forEach((id) => ids.add(id));
   } catch {}
 
@@ -395,7 +395,7 @@ async function fetchLikers(ownerId, postId) {
       offset,
     });
     return data.items || [];
-  });
+  }, 100, 10000);
 }
 
 async function fetchCommenters(ownerId, postId) {
@@ -578,18 +578,18 @@ function containsAny(text, keywords) {
   return keywords.some((keyword) => text.includes(keyword));
 }
 
-async function paginateIds(fetchPage) {
+async function paginateIds(fetchPage, pageSize = 100, maxItems = 10000) {
   const results = [];
   let offset = 0;
-  const count = 1000;
-  while (true) {
+  while (results.length < maxItems) {
+    const count = Math.min(pageSize, maxItems - results.length);
     const page = await fetchPage(offset, count);
     if (!page.length) break;
     results.push(...page);
     if (page.length < count) break;
-    offset += count;
+    offset += page.length;
   }
-  return uniqPositive(results);
+  return uniqPositive(results).slice(0, maxItems);
 }
 
 function uniqPositive(items) {

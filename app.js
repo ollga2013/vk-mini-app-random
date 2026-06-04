@@ -657,7 +657,7 @@ async function getBridgeRepostIds(parsed, userToken) {
       const data = await safeVkApiCall("wall.getReposts", {
         owner_id: parsed.ownerId,
         post_id: parsed.postId,
-        count: Math.min(count, 1000),
+        count,
         offset,
       }, userToken);
       if (!data) return [];
@@ -903,18 +903,19 @@ function containsBridgeContestText(text) {
   return BRIDGE_CONTEST_KEYS.some((key) => lower.includes(key));
 }
 
-async function paginateVkBridgeIds(fetchPage, pageSize = 1000) {
+async function paginateVkBridgeIds(fetchPage, pageSize = 100, maxItems = 10000) {
   const results = [];
   let offset = 0;
-  while (true) {
-    const data = await fetchPage(offset, pageSize);
+  while (results.length < maxItems) {
+    const count = Math.min(pageSize, maxItems - results.length);
+    const data = await fetchPage(offset, count);
     const page = Array.isArray(data) ? data : data.items || [];
     if (!page.length) break;
     results.push(...page);
-    if (page.length < pageSize) break;
-    offset += pageSize;
+    if (page.length < count) break;
+    offset += page.length;
   }
-  return Array.from(new Set(results.filter((id) => Number.isInteger(id) && id > 0)));
+  return Array.from(new Set(results.filter((id) => Number.isInteger(id) && id > 0))).slice(0, maxItems);
 }
 
 function ensureActionRow(map, id) {
@@ -1352,44 +1353,59 @@ function describeReason(reason) {
   return "Фильтр антифрода сработал.";
 }
 
-function buildReportText(result) {
+function buildResultMetaLabels(result) {
+  const labels = [];
   const modeText = result.requiredActions.map((action) => actionLabels[action]).join(", ");
+  if (modeText) labels.push(`???????: ${modeText}`);
+  if (result.pinnedPost) labels.push("???? ?????????");
+  return labels;
+}
+
+function buildEnabledFilterLines(result) {
+  const lines = [];
+  if (result.filters.requireAvatar) lines.push("- ??????: ???");
+  if (result.filters.requireGroupMember) lines.push("- ????????: ???");
+  if (result.filters.excludeCommunities) lines.push("- ??????????: ?????????");
+  if (result.filters.excludePrivate) lines.push("- ???????? ???????: ?????????");
+  if (result.filters.strictPrizeHunter) {
+    lines.push("- ??????? ???????? ??????????: ???");
+    lines.push(`- ????. ????????? ?? ?????: ${result.maxContests}`);
+  }
+  return lines;
+}
+
+function buildReportText(result) {
   const lines = [
-    "Итоги розыгрыша",
+    "????? ?????????",
     "",
-    `Пост: ${result.postUrl || "не указан"}`,
-    `Условие: ${modeText || "не указано"}`,
-    `Пост закреплен: ${result.pinnedPost ? "да" : "нет"}`,
-    `Победителей: ${result.winners.length}/${result.winnersCount}`,
-    `Допущено: ${result.eligible.length}`,
-    `Исключено: ${result.excluded.length}`,
-    "",
-    "Фильтры:",
-    `- Аватар: ${result.filters.requireAvatar ? "вкл" : "выкл"}`,
-    `- Подписка: ${result.filters.requireGroupMember ? "вкл" : "выкл"}`,
-    `- Сообщества: ${result.filters.excludeCommunities ? "исключать" : "не исключать"}`,
-    `- Закрытые профили: ${result.filters.excludePrivate ? "исключать" : "не исключать"}`,
-    `- Макс. конкурсов на стене: ${result.maxContests}`,
-    "",
-    "Победители:",
+    `????: ${result.postUrl || "?? ??????"}`,
+    ...buildResultMetaLabels(result),
+    `???????????: ${result.winners.length}/${result.winnersCount}`,
+    `????????: ${result.eligible.length}`,
+    `?????????: ${result.excluded.length}`,
   ];
+
+  const filterLines = buildEnabledFilterLines(result);
+  if (filterLines.length) {
+    lines.push("", "???????:", ...filterLines);
+  }
+
+  lines.push("", "??????????:");
 
   if (result.winners.length) {
     result.winners.forEach((winner, index) => {
-      lines.push(`${index + 1}. ${winner.name} — id${winner.id} — ${winner.profileUrl}`);
+      lines.push(`${index + 1}. ${winner.name} ? id${winner.id} ? ${winner.profileUrl}`);
     });
   } else {
-    lines.push("Пока нет победителей");
+    lines.push("???? ??? ???????????");
   }
 
-  lines.push("", "Лог исключений:");
+  lines.push("", "??? ??????????:");
   const reasonEntries = Object.entries(result.reasonCounts).sort((a, b) => b[1] - a[1]);
   if (reasonEntries.length) {
     reasonEntries.forEach(([reason, count]) => {
       lines.push(`- ${reason}: ${count}`);
     });
-  } else {
-    lines.push("- нет");
   }
 
   return lines.join("\n");
@@ -1495,10 +1511,7 @@ async function drawResultCanvas(ctx, result, allowRemoteImages) {
   ctx.fillStyle = "#5f708a";
   wrapText(ctx, `Пост: ${result.postUrl || "не указан"}`, 70, 135, w - 140, 34);
 
-  const chipsBottom = drawMetaChips(ctx, 70, 185, w - 140, [
-    `Условие: ${result.requiredActions.map((a) => actionLabels[a]).join(", ")}`,
-    `Пост закреплен: ${result.pinnedPost ? "да" : "нет"}`,
-  ]);
+  const chipsBottom = drawMetaChips(ctx, 70, 185, w - 140, buildResultMetaLabels(result));
 
   const panelY = chipsBottom + 34;
   const statsX = 70;
