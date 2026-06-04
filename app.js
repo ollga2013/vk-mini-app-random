@@ -3,6 +3,9 @@ const DEFAULT_VK_APP_ID = 54620998;
 const VK_IMPORT_SCOPE = "wall,groups";
 const VK_API_VERSION = "5.199";
 const LOCAL_API_HOSTS = new Set(["localhost", "127.0.0.1", ""]);
+const MAX_IMPORT_ITEMS = 50000;
+const MAX_WINNERS = 10000;
+const BRIDGE_MAX_CONCURRENT = 4;
 const BRIDGE_CONTEST_KEYS = [
   "конкурс",
   "розыгрыш",
@@ -27,6 +30,7 @@ const els = {
   modeBox: $("#entry-mode"),
   pinnedPost: $("#pinned-post"),
   winnersCount: $("#winners-count"),
+  participantsCount: $("#participants-count"),
   filters: $("#filters"),
   maxContests: $("#max-contests"),
   participants: $("#participants"),
@@ -37,6 +41,8 @@ const els = {
   winnersList: $("#winners-list"),
   auditLog: $("#audit-log"),
   apiStatus: $("#vk-api-status"),
+  restorePostUrl: $("#restore-post-url"),
+  clearPostUrl: $("#clear-post-url"),
   loadDemo: $("#load-demo"),
   checkImport: $("#check-import"),
   importVk: $("#import-vk"),
@@ -44,7 +50,7 @@ const els = {
   drawWinners: $("#draw-winners"),
   downloadReport: $("#download-report"),
   downloadJson: $("#download-json"),
-  downloadImage: $("#download-image"),
+  downloadImages: $$("#download-image, [data-action='download-image']"),
   useSample: $("#use-sample"),
   clearParticipants: $("#clear-participants"),
   jsonFile: $("#json-file"),
@@ -176,6 +182,21 @@ function bindEvents() {
 
   els.postUrl.addEventListener("input", () => {
     importedParticipants = null;
+    updatePostMemoryControls();
+    persistAndRefresh();
+  });
+  els.restorePostUrl.addEventListener("click", () => {
+    const postUrl = getRememberedPostUrl();
+    if (!postUrl) return;
+    importedParticipants = null;
+    els.postUrl.value = postUrl;
+    updatePostMemoryControls();
+    persistAndRefresh();
+  });
+  els.clearPostUrl.addEventListener("click", () => {
+    importedParticipants = null;
+    els.postUrl.value = "";
+    updatePostMemoryControls();
     persistAndRefresh();
   });
   els.importScanDepth.addEventListener("input", persistAndRefresh);
@@ -244,9 +265,11 @@ function bindEvents() {
     downloadText("vk-results-report.json", payload);
   });
 
-  els.downloadImage.addEventListener("click", async () => {
-    const result = lastResult ?? recompute();
-    await downloadResultImage(result);
+  els.downloadImages.forEach((button) => {
+    button.addEventListener("click", async () => {
+      const result = lastResult ?? recompute();
+      await downloadResultImage(result);
+    });
   });
 
   els.jsonFile.addEventListener("change", async () => {
@@ -544,44 +567,50 @@ async function importFromVkBridge(state, userToken) {
 
   const actionMap = new Map();
   const modes = state.entryModes.includes("all") ? ["repost", "comment", "like"] : state.entryModes;
+  const tasks = [];
 
   if (modes.includes("repost")) {
-    setApiStatus("Собираю репосты из VK...");
-    const ids = await getBridgeRepostIds(parsed, userToken);
-    ids.forEach((id) => ensureActionRow(actionMap, id).repost = true);
+    tasks.push(async () => {
+      setApiStatus("Собираю репосты из VK...");
+      const ids = await getBridgeRepostIds(parsed, userToken);
+      ids.forEach((id) => ensureActionRow(actionMap, id).repost = true);
+    });
   }
 
   if (modes.includes("comment")) {
-    setApiStatus("Собираю комментарии из VK...");
-    const ids = await paginateVkBridgeIds(async (offset) => {
-      const data = await vkApiCall("wall.getComments", {
-        owner_id: parsed.ownerId,
-        post_id: parsed.postId,
-        count: 100,
-        offset,
-        sort: "desc",
-      }, userToken);
-      return (data.items || [])
-        .map((comment) => comment.from_id)
-        .filter((id) => Number.isInteger(id) && id > 0);
-    }, 100);
-    ids.forEach((id) => ensureActionRow(actionMap, id).comment = true);
+    tasks.push(async () => {
+      setApiStatus("Собираю комментарии из VK...");
+      const ids = await paginateVkBridgeIds((offset, count) =>
+        vkApiCall("wall.getComments", {
+          owner_id: parsed.ownerId,
+          post_id: parsed.postId,
+          count,
+          offset,
+          sort: "desc",
+        }, userToken),
+      );
+      ids.forEach((id) => ensureActionRow(actionMap, id).comment = true);
+    });
   }
 
   if (modes.includes("like")) {
-    setApiStatus("Собираю лайки из VK...");
-    const ids = await paginateVkBridgeIds((offset, count) =>
-      vkApiCall("likes.getList", {
-        type: "post",
-        owner_id: parsed.ownerId,
-        item_id: parsed.postId,
-        filter: "likes",
-        count,
-        offset,
-      }, userToken),
-    );
-    ids.forEach((id) => ensureActionRow(actionMap, id).like = true);
+    tasks.push(async () => {
+      setApiStatus("Собираю лайки из VK...");
+      const ids = await paginateVkBridgeIds((offset, count) =>
+        vkApiCall("likes.getList", {
+          type: "post",
+          owner_id: parsed.ownerId,
+          item_id: parsed.postId,
+          filter: "likes",
+          count,
+          offset,
+        }, userToken),
+      );
+      ids.forEach((id) => ensureActionRow(actionMap, id).like = true);
+    });
   }
+
+  await runBridgeLimited(tasks, Math.min(BRIDGE_MAX_CONCURRENT, tasks.length || 1));
 
   return buildBridgeImportPayload({
     state,
@@ -614,11 +643,13 @@ async function buildBridgeImportPayload({ state, parsed, actionMap, selectedMode
   }
 
   setApiStatus(`VK найдено ID: ${ids.length}. Загружаю профили...`);
-  const users = await getBridgeUsers(ids, userToken);
   const groupId = parsed.ownerId < 0 ? Math.abs(parsed.ownerId) : null;
-  const memberMap = groupId ? await getBridgeMemberMap(groupId, ids, userToken) : new Map();
   const strictPrizeHunter = Boolean(state.filters?.strictPrizeHunter);
-  const wallMap = strictPrizeHunter ? await getBridgeWallSignals(ids, state.importScanDepth, userToken) : new Map();
+  const [users, memberMap, wallMap] = await Promise.all([
+    getBridgeUsers(ids, userToken),
+    groupId ? getBridgeMemberMap(groupId, ids, userToken) : new Map(),
+    strictPrizeHunter ? getBridgeWallSignals(ids, state.importScanDepth, userToken) : new Map(),
+  ]);
 
   const participants = users.map((user) => {
     const wallSignals = wallMap.get(user.id) || {};
@@ -674,7 +705,7 @@ async function getBridgeRepostIds(parsed, userToken) {
   return Array.from(new Set([...copiesIds, ...wallIds]));
 }
 
-async function fetchBridgeWallRepostIds(parsed, userToken, pageSize = 100, maxItems = 10000) {
+async function fetchBridgeWallRepostIds(parsed, userToken, pageSize = 100, maxItems = MAX_IMPORT_ITEMS) {
   const results = [];
   let offset = 0;
   while (results.length < maxItems) {
@@ -700,33 +731,36 @@ async function fetchBridgeWallRepostIds(parsed, userToken, pageSize = 100, maxIt
 
 async function getBridgeUsers(ids, userToken) {
   const rows = [];
-  for (const batch of chunkItems(ids, 1000)) {
-    const data = await vkApiCall("users.get", {
-      user_ids: batch.join(","),
-      fields: [
-        "counters",
-        "domain",
-        "photo_50",
-        "photo_100",
-        "photo_200",
-        "about",
-        "status",
-        "is_closed",
-      ].join(","),
-    }, userToken);
+  await runBridgeLimited(
+    chunkItems(ids, 1000).map((batch) => async () => {
+      const data = await vkApiCall("users.get", {
+        user_ids: batch.join(","),
+        fields: [
+          "counters",
+          "domain",
+          "photo_50",
+          "photo_100",
+          "photo_200",
+          "about",
+          "status",
+          "is_closed",
+        ].join(","),
+      }, userToken);
 
-    (data || []).forEach((user) => {
-      rows.push({
-        id: Number(user.id),
-        name: `${user.first_name || ""} ${user.last_name || ""}`.trim() || `id${user.id}`,
-        profileUrl: `https://vk.com/${user.domain || `id${user.id}`}`,
-        avatarUrl: user.photo_200 || user.photo_100 || user.photo_50 || "",
-        friends: user.counters && Number.isFinite(user.counters.friends) ? user.counters.friends : null,
-        isPrivate: Boolean(user.is_closed),
-        bioText: [user.about, user.status].filter(Boolean).join(" ").trim(),
+      (data || []).forEach((user) => {
+        rows.push({
+          id: Number(user.id),
+          name: `${user.first_name || ""} ${user.last_name || ""}`.trim() || `id${user.id}`,
+          profileUrl: `https://vk.com/${user.domain || `id${user.id}`}`,
+          avatarUrl: user.photo_200 || user.photo_100 || user.photo_50 || "",
+          friends: user.counters && Number.isFinite(user.counters.friends) ? user.counters.friends : null,
+          isPrivate: Boolean(user.is_closed),
+          bioText: [user.about, user.status].filter(Boolean).join(" ").trim(),
+        });
       });
-    });
-  }
+    }),
+    BRIDGE_MAX_CONCURRENT,
+  );
   return rows;
 }
 
@@ -734,22 +768,25 @@ async function getBridgeMemberMap(groupId, ids, userToken) {
   const result = new Map();
   setApiStatus("Проверяю подписку на сообщество...");
 
-  for (const batch of chunkItems(ids, 500)) {
-    const data = await safeVkApiCall("groups.isMember", {
-      group_id: groupId,
-      user_ids: batch.join(","),
-    }, userToken);
+  await runBridgeLimited(
+    chunkItems(ids, 500).map((batch) => async () => {
+      const data = await safeVkApiCall("groups.isMember", {
+        group_id: groupId,
+        user_ids: batch.join(","),
+      }, userToken);
 
-    if (Array.isArray(data)) {
-      data.forEach((row) => {
-        if (row && row.user_id !== undefined) {
-          result.set(Number(row.user_id), Boolean(Number(row.member)));
-        }
-      });
-    } else {
-      batch.forEach((id) => result.set(Number(id), null));
-    }
-  }
+      if (Array.isArray(data)) {
+        data.forEach((row) => {
+          if (row && row.user_id !== undefined) {
+            result.set(Number(row.user_id), Boolean(Number(row.member)));
+          }
+        });
+      } else {
+        batch.forEach((id) => result.set(Number(id), null));
+      }
+    }),
+    BRIDGE_MAX_CONCURRENT,
+  );
   return result;
 }
 
@@ -931,19 +968,33 @@ function containsBridgeContestText(text) {
   return BRIDGE_CONTEST_KEYS.some((key) => lower.includes(key));
 }
 
-async function paginateVkBridgeIds(fetchPage, pageSize = 100, maxItems = 10000) {
+async function paginateVkBridgeIds(fetchPage, pageSize = 100, maxItems = MAX_IMPORT_ITEMS) {
   const results = [];
   let offset = 0;
-  while (results.length < maxItems) {
-    const count = Math.min(pageSize, maxItems - results.length);
+  while (offset < maxItems) {
+    const count = Math.min(pageSize, maxItems - offset);
     const data = await fetchPage(offset, count);
-    const page = Array.isArray(data) ? data : data.items || [];
+    const page = Array.isArray(data) ? data : data?.items || [];
     if (!page.length) break;
-    results.push(...page);
-    if (page.length < count) break;
+    results.push(...extractVkIdsFromPage(page));
     offset += page.length;
+    if (page.length < count || (Number.isFinite(data?.count) && offset >= data.count)) break;
   }
   return Array.from(new Set(results.filter((id) => Number.isInteger(id) && id > 0))).slice(0, maxItems);
+}
+
+function extractVkIdsFromPage(page) {
+  return page
+    .map((item) => {
+      if (Number.isInteger(item)) return item;
+      const fromId = Number(item?.from_id);
+      if (Number.isInteger(fromId) && fromId > 0) return fromId;
+      const ownerId = Number(item?.owner_id);
+      if (Number.isInteger(ownerId) && ownerId > 0) return ownerId;
+      const id = Number(item?.id);
+      return Number.isInteger(id) && id > 0 ? id : null;
+    })
+    .filter((id) => Number.isInteger(id) && id > 0);
 }
 
 function ensureActionRow(map, id) {
@@ -964,12 +1015,13 @@ function setApiStatus(text) {
 }
 
 function hydrateState() {
-  els.postUrl.value = lastState.postUrl ?? "";
+  els.postUrl.value = "";
   els.pinnedPost.checked = lastState.pinnedPost ?? true;
   els.winnersCount.value = String(lastState.winnersCount ?? 3);
   els.importScanDepth.value = String(lastState.importScanDepth ?? 60);
   els.maxContests.value = String(lastState.maxContests ?? 3);
   els.participants.value = lastState.participantsText ?? "";
+  updatePostMemoryControls();
 
   $$('input[type="checkbox"]', els.modeBox).forEach((box) => {
     box.checked = lastState.entryModes?.includes(box.value) ?? box.checked;
@@ -989,13 +1041,28 @@ function hydrateState() {
   });
 }
 
+function getRememberedPostUrl() {
+  return String(lastState.recentPostUrl || lastState.postUrl || "").trim();
+}
+
+function updatePostMemoryControls() {
+  const rememberedPostUrl = getRememberedPostUrl();
+  const hasCurrentPostUrl = Boolean(els.postUrl.value.trim());
+  els.restorePostUrl.disabled = !rememberedPostUrl || els.postUrl.value.trim() === rememberedPostUrl;
+  els.clearPostUrl.disabled = !hasCurrentPostUrl;
+  els.restorePostUrl.title = rememberedPostUrl || "";
+}
+
 function saveState() {
   const state = collectState();
   const { participantsData, ...persistable } = state;
+  persistable.recentPostUrl = state.postUrl || getRememberedPostUrl();
+  persistable.postUrl = "";
   if (importedParticipants) {
     persistable.participantsText = "";
   }
   lastState = persistable;
+  updatePostMemoryControls();
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(persistable));
   } catch {
@@ -1008,6 +1075,7 @@ function loadState() {
   if (!raw) {
     return {
       postUrl: "",
+      recentPostUrl: "",
       entryModes: ["repost", "comment", "like"],
       pinnedPost: true,
       winnersCount: 3,
@@ -1030,6 +1098,7 @@ function loadState() {
     localStorage.removeItem(STORAGE_KEY);
     return {
       postUrl: "",
+      recentPostUrl: "",
       entryModes: ["repost", "comment", "like"],
       pinnedPost: true,
       winnersCount: 3,
@@ -1061,7 +1130,7 @@ function collectState() {
     postUrl: els.postUrl.value.trim(),
     entryModes: entryModes.length ? entryModes : ["repost", "comment", "like"],
     pinnedPost: els.pinnedPost.checked,
-    winnersCount: clampInt(els.winnersCount.value, 1, 100, 3),
+    winnersCount: clampInt(els.winnersCount.value, 1, MAX_WINNERS, 3),
     importScanDepth: clampInt(els.importScanDepth.value, 10, 200, 60),
     filters,
     maxContests: clampInt(els.maxContests.value, 0, 1000, 3),
@@ -1315,6 +1384,7 @@ function evaluateParticipant(participant, state, requiredActions) {
 }
 
 function render(result) {
+  els.participantsCount.textContent = String(result.participants.length);
   els.eligibleCount.textContent = String(result.eligible.length);
   els.excludedCount.textContent = String(result.excluded.length);
 

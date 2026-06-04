@@ -14,6 +14,7 @@ const API_VERSION = process.env.VK_API_VERSION || "5.199";
 const USER_TOKEN = String(process.env.VK_USER_TOKEN || process.env.VK_TOKEN || "").trim();
 const SERVICE_TOKEN = String(process.env.VK_SERVICE_TOKEN || "").trim();
 const DEFAULT_SCAN_DEPTH = clampInt(process.env.VK_IMPORT_SCAN_DEPTH, 10, 200, 60);
+const MAX_IMPORT_ITEMS = clampInt(process.env.VK_IMPORT_MAX_ITEMS, 100, 100000, 50000);
 const MAX_CONCURRENT = 6;
 const vkTokenContext = new AsyncLocalStorage();
 let tokenDiagnosticsPromise = null;
@@ -261,10 +262,12 @@ async function buildParticipants({ postUrl, ownerId, postId, selectedModes, sour
     };
   }
 
-  const users = await getUsers(ids);
   const groupId = ownerId < 0 ? Math.abs(ownerId) : null;
-  const memberMap = groupId ? await getMemberMap(groupId, ids) : new Map();
-  const wallMap = strictPrizeHunter ? await getWallSignals(ids, scanDepth) : new Map();
+  const [users, memberMap, wallMap] = await Promise.all([
+    getUsers(ids),
+    groupId ? getMemberMap(groupId, ids) : new Map(),
+    strictPrizeHunter ? getWallSignals(ids, scanDepth) : new Map(),
+  ]);
 
   const participants = users.map((user) => {
     const actionFlags = sourceMaps.get(user.id) || { repost: false, comment: false, like: false };
@@ -369,14 +372,14 @@ async function fetchReposters(ownerId, postId) {
         offset,
       });
       return data.items || [];
-    }, 100, 10000);
+    }, 100, MAX_IMPORT_ITEMS);
     copyIds.forEach((id) => ids.add(id));
   } catch {}
 
   return Array.from(ids);
 }
 
-async function fetchWallReposters(ownerId, postId, pageSize = 100, maxItems = 10000) {
+async function fetchWallReposters(ownerId, postId, pageSize = 100, maxItems = MAX_IMPORT_ITEMS) {
   const results = [];
   let offset = 0;
   while (results.length < maxItems) {
@@ -407,14 +410,14 @@ async function fetchLikers(ownerId, postId) {
       offset,
     });
     return data.items || [];
-  }, 100, 10000);
+  }, 100, MAX_IMPORT_ITEMS);
 }
 
 async function fetchCommenters(ownerId, postId) {
   const results = [];
   let offset = 0;
   const count = 100;
-  while (true) {
+  while (offset < MAX_IMPORT_ITEMS) {
     const data = await vkCall("wall.getComments", {
       owner_id: ownerId,
       post_id: postId,
@@ -428,10 +431,10 @@ async function fetchCommenters(ownerId, postId) {
         .map((comment) => comment.from_id)
         .filter((id) => Number.isInteger(id) && id > 0),
     );
-    if (items.length < count) break;
+    if (items.length < count || (Number.isFinite(data.count) && offset + items.length >= data.count)) break;
     offset += count;
   }
-  return uniqPositive(results);
+  return uniqPositive(results).slice(0, MAX_IMPORT_ITEMS);
 }
 
 function extractRepostOwnerIds(response) {
@@ -449,74 +452,80 @@ function extractRepostOwnerIds(response) {
 async function getUsers(ids) {
   const chunks = chunk(ids, 1000);
   const rows = [];
-  for (const batch of chunks) {
-    const data = await vkCall("users.get", {
-      user_ids: batch.join(","),
-      fields: [
-        "counters",
-        "photo_id",
-        "has_photo",
-        "screen_name",
-        "domain",
-        "photo_50",
-        "photo_100",
-        "photo_200",
-        "bdate",
-        "about",
-        "status",
-        "can_see_all_posts",
-        "is_closed",
-      ].join(","),
-    });
-
-    (data || []).forEach((u) => {
-      rows.push({
-        id: u.id,
-        name: `${u.first_name || ""} ${u.last_name || ""}`.trim() || `id${u.id}`,
-        profileUrl: `https://vk.com/${u.domain || `id${u.id}`}`,
-        avatarUrl: u.photo_200 || u.photo_100 || u.photo_50 || "",
-        friends: u.counters && Number.isFinite(u.counters.friends) ? u.counters.friends : null,
-        bioText: [u.about, u.status].filter(Boolean).join(" ").trim(),
+  await runLimited(
+    chunks.map((batch) => async () => {
+      const data = await vkCall("users.get", {
+        user_ids: batch.join(","),
+        fields: [
+          "counters",
+          "photo_id",
+          "has_photo",
+          "screen_name",
+          "domain",
+          "photo_50",
+          "photo_100",
+          "photo_200",
+          "bdate",
+          "about",
+          "status",
+          "can_see_all_posts",
+          "is_closed",
+        ].join(","),
       });
-    });
-  }
+
+      (data || []).forEach((u) => {
+        rows.push({
+          id: u.id,
+          name: `${u.first_name || ""} ${u.last_name || ""}`.trim() || `id${u.id}`,
+          profileUrl: `https://vk.com/${u.domain || `id${u.id}`}`,
+          avatarUrl: u.photo_200 || u.photo_100 || u.photo_50 || "",
+          friends: u.counters && Number.isFinite(u.counters.friends) ? u.counters.friends : null,
+          bioText: [u.about, u.status].filter(Boolean).join(" ").trim(),
+        });
+      });
+    }),
+    MAX_CONCURRENT,
+  );
   return rows;
 }
 
 async function getMemberMap(groupId, ids) {
   const result = new Map();
-  for (const batch of chunk(ids, 500)) {
-    let data = null;
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      try {
-        data = await vkCall("groups.isMember", {
-          group_id: groupId,
-          user_ids: batch.join(","),
-        });
-        break;
-      } catch (error) {
-        const message = String(error && error.message ? error.message : error);
-        if (!message.includes("Too many requests per second") || attempt === 2) {
-          data = null;
+  await runLimited(
+    chunk(ids, 500).map((batch) => async () => {
+      let data = null;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        try {
+          data = await vkCall("groups.isMember", {
+            group_id: groupId,
+            user_ids: batch.join(","),
+          });
           break;
+        } catch (error) {
+          const message = String(error && error.message ? error.message : error);
+          if (!message.includes("Too many requests per second") || attempt === 2) {
+            data = null;
+            break;
+          }
+          await sleep(250 * (attempt + 1));
         }
-        await sleep(250 * (attempt + 1));
       }
-    }
 
-    if (Array.isArray(data)) {
-      data.forEach((row) => {
-        if (!row || row.user_id === undefined) return;
-        result.set(Number(row.user_id), Boolean(Number(row.member)));
-      });
-    } else if (typeof data === "object" && data !== null && "member" in data) {
-      batch.forEach((id) => result.set(Number(id), Boolean(Number(data.member))));
-    } else if (data !== null && data !== undefined) {
-      batch.forEach((id) => result.set(Number(id), Boolean(data)));
-    } else {
-      batch.forEach((id) => result.set(Number(id), null));
-    }
-  }
+      if (Array.isArray(data)) {
+        data.forEach((row) => {
+          if (!row || row.user_id === undefined) return;
+          result.set(Number(row.user_id), Boolean(Number(row.member)));
+        });
+      } else if (typeof data === "object" && data !== null && "member" in data) {
+        batch.forEach((id) => result.set(Number(id), Boolean(Number(data.member))));
+      } else if (data !== null && data !== undefined) {
+        batch.forEach((id) => result.set(Number(id), Boolean(data)));
+      } else {
+        batch.forEach((id) => result.set(Number(id), null));
+      }
+    }),
+    MAX_CONCURRENT,
+  );
   return result;
 }
 
@@ -590,7 +599,7 @@ function containsAny(text, keywords) {
   return keywords.some((keyword) => text.includes(keyword));
 }
 
-async function paginateIds(fetchPage, pageSize = 100, maxItems = 10000) {
+async function paginateIds(fetchPage, pageSize = 100, maxItems = MAX_IMPORT_ITEMS) {
   const results = [];
   let offset = 0;
   while (results.length < maxItems) {
