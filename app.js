@@ -555,6 +555,7 @@ async function importFromServer(state, userToken) {
       entryModes: state.entryModes,
       scanDepth: state.importScanDepth,
       strictPrizeHunter: Boolean(state.filters?.strictPrizeHunter),
+      requirePinned: Boolean(state.pinnedPost),
       userToken,
       launchParams: getLaunchParamsString(),
     }),
@@ -686,10 +687,11 @@ async function buildBridgeImportPayload({ state, parsed, actionMap, selectedMode
   setApiStatus(`VK найдено ID: ${ids.length}. Загружаю профили...`);
   const groupId = parsed.ownerId < 0 ? Math.abs(parsed.ownerId) : null;
   const strictPrizeHunter = Boolean(state.filters?.strictPrizeHunter);
+  const requirePinned = Boolean(state.pinnedPost);
   const [users, memberMap, wallMap] = await Promise.all([
     getBridgeUsers(ids, userToken),
     groupId ? getBridgeMemberMap(groupId, ids, userToken) : new Map(),
-    strictPrizeHunter ? getBridgeWallSignals(ids, state.importScanDepth, userToken) : new Map(),
+    (strictPrizeHunter || requirePinned) ? getBridgeWallSignals(ids, strictPrizeHunter ? state.importScanDepth : 3, userToken, parsed.ownerId, parsed.postId) : new Map(),
   ]);
 
   const participants = users.map((user) => {
@@ -707,6 +709,7 @@ async function buildBridgeImportPayload({ state, parsed, actionMap, selectedMode
       repostShare: wallSignals.repostShare ?? null,
       isCommunity: false,
       isPrivate: wallSignals.isPrivate ?? user.isPrivate ?? false,
+      hasPinnedTargetPost: wallSignals.hasPinnedTargetPost ?? null,
       bioText: user.bioText || "",
       wallText: wallSignals.wallText || "",
     };
@@ -841,7 +844,7 @@ async function getBridgeMemberMap(groupId, ids, userToken) {
   return result;
 }
 
-async function getBridgeWallSignals(ids, scanDepth, userToken) {
+async function getBridgeWallSignals(ids, scanDepth, userToken, targetOwnerId, targetPostId) {
   const result = new Map();
   let done = 0;
   const startedAt = Date.now();
@@ -868,11 +871,24 @@ async function getBridgeWallSignals(ids, scanDepth, userToken) {
       let repostCount = 0;
       let contestCount = 0;
       let oldestDate = null;
+      let hasPinnedTargetPost = false;
       const wallTexts = [];
 
       for (const post of items) {
         if (Number.isInteger(post.date)) {
           oldestDate = oldestDate === null ? post.date : Math.min(oldestDate, post.date);
+        }
+
+        if (post.is_pinned === 1 && targetOwnerId !== undefined && targetPostId !== undefined) {
+          if (Array.isArray(post.copy_history)) {
+            for (const copy of post.copy_history) {
+              if (copy.owner_id === targetOwnerId && copy.id === targetPostId) {
+                hasPinnedTargetPost = true;
+              }
+            }
+          } else if (post.text && post.text.includes(`${targetOwnerId}_${targetPostId}`)) {
+            hasPinnedTargetPost = true;
+          }
         }
 
         const text = String(post.text || "").toLowerCase();
@@ -898,6 +914,7 @@ async function getBridgeWallSignals(ids, scanDepth, userToken) {
         repostShare: total ? repostCount / total : null,
         ageDays: oldestDate ? Math.max(0, Math.floor((now - oldestDate) / 86400)) : null,
         wallText: wallTexts.join("\n").slice(0, 8000),
+        hasPinnedTargetPost,
       });
     }),
     6,
@@ -1336,6 +1353,7 @@ function normalizeParticipant(raw, index) {
       repostShare: null,
       isCommunity: null,
       isPrivate: null,
+      hasPinnedTargetPost: null,
       bioText: "",
       wallText: "",
     };
@@ -1364,6 +1382,7 @@ function normalizeParticipant(raw, index) {
     repostShare: toNum(participant.repostShare ?? participant.repostRate ?? participant.repostRatio),
     isCommunity: participant.isCommunity ?? participant.community ?? null,
     isPrivate: participant.isPrivate ?? participant.private ?? null,
+    hasPinnedTargetPost: toBool(participant.hasPinnedTargetPost),
     bioText: String(participant.bioText ?? participant.bio ?? participant.about ?? ""),
     wallText: String(participant.wallText ?? participant.wall ?? ""),
   };
@@ -1503,6 +1522,14 @@ function evaluateParticipant(participant, state, requiredActions) {
 
   if (filters.excludePrivate && participant.isPrivate === true) {
     reasons.push("закрытый профиль");
+  }
+
+  if (state.pinnedPost) {
+    if (participant.hasPinnedTargetPost === false) {
+      reasons.push("нет закрепленного поста");
+    } else if (participant.hasPinnedTargetPost === null) {
+      reasons.push("нет данных по закрепу");
+    }
   }
 
   const strictPrizeHunter = Boolean(filters.strictPrizeHunter);

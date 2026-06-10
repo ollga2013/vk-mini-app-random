@@ -121,9 +121,10 @@ async function handleRequest(req, res) {
       const entryModes = Array.isArray(body.entryModes) ? body.entryModes : ["repost"];
       const scanDepth = clampInt(body.scanDepth, 10, 200, DEFAULT_SCAN_DEPTH);
       const strictPrizeHunter = Boolean(body.strictPrizeHunter);
+      const requirePinned = Boolean(body.requirePinned);
       const requestUserToken = String(body.userToken || "").trim();
       const tokens = Array.from(new Set([requestUserToken, USER_TOKEN, SERVICE_TOKEN].filter(Boolean)));
-      const result = await withVkTokens(tokens, () => importParticipants({ postUrl, entryModes, scanDepth, strictPrizeHunter, requestUserToken }));
+      const result = await withVkTokens(tokens, () => importParticipants({ postUrl, entryModes, scanDepth, strictPrizeHunter, requirePinned, requestUserToken }));
       sendJson(res, 200, result);
       return;
     }
@@ -139,8 +140,9 @@ async function handleRequest(req, res) {
       const entryModes = Array.isArray(body.entryModes) ? body.entryModes : ["repost"];
       const scanDepth = clampInt(body.scanDepth, 10, 200, DEFAULT_SCAN_DEPTH);
       const strictPrizeHunter = Boolean(body.strictPrizeHunter);
+      const requirePinned = Boolean(body.requirePinned);
       const actionRows = Array.isArray(body.actionRows) ? body.actionRows : [];
-      const result = await enrichParticipants({ postUrl, entryModes, scanDepth, strictPrizeHunter, actionRows });
+      const result = await enrichParticipants({ postUrl, entryModes, scanDepth, strictPrizeHunter, requirePinned, actionRows });
       sendJson(res, 200, result);
       return;
     }
@@ -194,7 +196,7 @@ async function serveStatic(pathname, res) {
   }
 }
 
-async function importParticipants({ postUrl, entryModes, scanDepth, strictPrizeHunter, requestUserToken }) {
+async function importParticipants({ postUrl, entryModes, scanDepth, strictPrizeHunter, requirePinned, requestUserToken }) {
   const parsed = parseWallUrl(postUrl);
   if (!parsed) {
     return { error: "Не удалось распознать ссылку на пост VK." };
@@ -221,6 +223,7 @@ async function importParticipants({ postUrl, entryModes, scanDepth, strictPrizeH
     sourceMaps,
     scanDepth,
     strictPrizeHunter,
+    requirePinned,
     meta: {
       repostImportAvailable: hasRepostAccess,
       liveUserTokenUsed: requestUserTokenValid,
@@ -235,7 +238,7 @@ async function importParticipants({ postUrl, entryModes, scanDepth, strictPrizeH
   });
 }
 
-async function enrichParticipants({ postUrl, entryModes, scanDepth, strictPrizeHunter, actionRows }) {
+async function enrichParticipants({ postUrl, entryModes, scanDepth, strictPrizeHunter, requirePinned, actionRows }) {
   const parsed = parseWallUrl(postUrl);
   if (!parsed) {
     return { error: "Не удалось распознать ссылку на пост VK." };
@@ -259,6 +262,7 @@ async function enrichParticipants({ postUrl, entryModes, scanDepth, strictPrizeH
     sourceMaps,
     scanDepth,
     strictPrizeHunter,
+    requirePinned,
     meta: {
       clientBridgeImport: true,
       repostImportAvailable: true,
@@ -266,7 +270,7 @@ async function enrichParticipants({ postUrl, entryModes, scanDepth, strictPrizeH
   });
 }
 
-async function buildParticipants({ postUrl, ownerId, postId, selectedModes, sourceMaps, scanDepth, strictPrizeHunter = false, meta = {} }) {
+async function buildParticipants({ postUrl, ownerId, postId, selectedModes, sourceMaps, scanDepth, strictPrizeHunter = false, requirePinned = false, meta = {} }) {
   const ids = Array.from(sourceMaps.keys());
 
   if (!ids.length) {
@@ -287,7 +291,7 @@ async function buildParticipants({ postUrl, ownerId, postId, selectedModes, sour
   const [users, memberMap, wallMap] = await Promise.all([
     getUsers(ids),
     groupId ? getMemberMap(groupId, ids) : new Map(),
-    strictPrizeHunter ? getWallSignals(ids, scanDepth) : new Map(),
+    (strictPrizeHunter || requirePinned) ? getWallSignals(ids, strictPrizeHunter ? scanDepth : 3, ownerId, postId) : new Map(),
   ]);
 
   const participants = users.map((user) => {
@@ -307,6 +311,7 @@ async function buildParticipants({ postUrl, ownerId, postId, selectedModes, sour
       repostShare: wallSignals.repostShare ?? null,
       isCommunity: false,
       isPrivate: wallSignals.isPrivate ?? false,
+      hasPinnedTargetPost: wallSignals.hasPinnedTargetPost ?? null,
       bioText: user.bioText || "",
       wallText: wallSignals.wallText || "",
     };
@@ -568,7 +573,7 @@ async function getMemberMap(groupId, ids) {
   return result;
 }
 
-async function getWallSignals(ids, scanDepth) {
+async function getWallSignals(ids, scanDepth, targetOwnerId, targetPostId) {
   const result = new Map();
   await runLimited(
     ids.map((id) => async () => {
@@ -588,12 +593,26 @@ async function getWallSignals(ids, scanDepth) {
       let contestCount = 0;
       let spamHitCount = 0;
       let oldestDate = null;
+      let hasPinnedTargetPost = false;
       const wallTexts = [];
 
       for (const post of items) {
         if (Number.isInteger(post.date)) {
           oldestDate = oldestDate === null ? post.date : Math.min(oldestDate, post.date);
         }
+
+        if (post.is_pinned === 1 && targetOwnerId !== undefined && targetPostId !== undefined) {
+          if (Array.isArray(post.copy_history)) {
+            for (const copy of post.copy_history) {
+              if (copy.owner_id === targetOwnerId && copy.id === targetPostId) {
+                hasPinnedTargetPost = true;
+              }
+            }
+          } else if (post.text && post.text.includes(`${targetOwnerId}_${targetPostId}`)) {
+            hasPinnedTargetPost = true;
+          }
+        }
+
         const text = String(post.text || "").toLowerCase();
         wallTexts.push(String(post.text || ""));
         if (Array.isArray(post.copy_history) && post.copy_history.length) {
@@ -620,6 +639,7 @@ async function getWallSignals(ids, scanDepth) {
         ageDays,
         wallText: wallTexts.join("\n").slice(0, 8000),
         spamHitCount,
+        hasPinnedTargetPost,
       });
     }),
     MAX_CONCURRENT,
