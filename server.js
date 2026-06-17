@@ -601,15 +601,30 @@ async function getWallSignals(ids, scanDepth, targetOwnerId, targetPostId) {
           oldestDate = oldestDate === null ? post.date : Math.min(oldestDate, post.date);
         }
 
-        if (post.is_pinned === 1 && targetOwnerId !== undefined && targetPostId !== undefined) {
+        const isTopPost = (post === items[0]);
+        if ((post.is_pinned || post.is_pinned === 1 || isTopPost) && targetOwnerId !== undefined && targetPostId !== undefined) {
           if (Array.isArray(post.copy_history)) {
             for (const copy of post.copy_history) {
-              if (copy.owner_id === targetOwnerId && copy.id === targetPostId) {
+              if (Number(copy.owner_id) === Number(targetOwnerId) && Number(copy.id) === Number(targetPostId)) {
                 hasPinnedTargetPost = true;
               }
             }
-          } else if (post.text && post.text.includes(`${targetOwnerId}_${targetPostId}`)) {
+          }
+          
+          if (!hasPinnedTargetPost && post.text && post.text.includes(`${targetOwnerId}_${targetPostId}`)) {
             hasPinnedTargetPost = true;
+          }
+
+          if (!hasPinnedTargetPost) {
+             const postStr = JSON.stringify(post);
+             if (
+                 (postStr.includes(`"owner_id":${targetOwnerId}`) && postStr.includes(`"id":${targetPostId}`)) ||
+                 (postStr.includes(`"to_id":${targetOwnerId}`) && postStr.includes(`"id":${targetPostId}`)) ||
+                 (postStr.includes(`"from_id":${targetOwnerId}`) && postStr.includes(`"id":${targetPostId}`)) ||
+                 postStr.includes(`${targetOwnerId}_${targetPostId}`)
+             ) {
+                 hasPinnedTargetPost = true;
+             }
           }
         }
 
