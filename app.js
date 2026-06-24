@@ -53,6 +53,7 @@ const els = {
   clearParticipants: $("#clear-participants"),
   jsonFile: $("#json-file"),
   canvas: $("#export-canvas"),
+  excludedWinners: $("#excluded-winners"),
 };
 
 const actionLabels = {
@@ -177,6 +178,9 @@ function bindEvents() {
     els.pinnedPost,
     els.maxContests,
   ].forEach((node) => node.addEventListener("input", persistAndRefresh));
+  if (els.excludedWinners) {
+    els.excludedWinners.addEventListener("input", persistAndRefresh);
+  }
   const syncPrizesAndRefresh = () => {
     renderPrizeInputs();
     persistAndRefresh();
@@ -555,6 +559,7 @@ async function importFromServer(state, userToken) {
       entryModes: state.entryModes,
       scanDepth: state.importScanDepth,
       strictPrizeHunter: Boolean(state.filters?.strictPrizeHunter),
+      requirePinned: Boolean(state.pinnedPost),
       userToken,
       launchParams: getLaunchParamsString(),
     }),
@@ -686,10 +691,13 @@ async function buildBridgeImportPayload({ state, parsed, actionMap, selectedMode
   setApiStatus(`VK найдено ID: ${ids.length}. Загружаю профили...`);
   const groupId = parsed.ownerId < 0 ? Math.abs(parsed.ownerId) : null;
   const strictPrizeHunter = Boolean(state.filters?.strictPrizeHunter);
+  const requirePinned = Boolean(state.pinnedPost);
+  // For pinned check, count=5 is enough: VK always returns the pinned post first with is_pinned=1
+  const wallScanDepth = strictPrizeHunter ? state.importScanDepth : 5;
   const [users, memberMap, wallMap] = await Promise.all([
     getBridgeUsers(ids, userToken),
     groupId ? getBridgeMemberMap(groupId, ids, userToken) : new Map(),
-    strictPrizeHunter ? getBridgeWallSignals(ids, state.importScanDepth, userToken) : new Map(),
+    (strictPrizeHunter || requirePinned) ? getBridgeWallSignals(ids, wallScanDepth, userToken, parsed.ownerId, parsed.postId) : new Map(),
   ]);
 
   const participants = users.map((user) => {
@@ -707,6 +715,7 @@ async function buildBridgeImportPayload({ state, parsed, actionMap, selectedMode
       repostShare: wallSignals.repostShare ?? null,
       isCommunity: false,
       isPrivate: wallSignals.isPrivate ?? user.isPrivate ?? false,
+      hasPinnedTargetPost: wallSignals.hasPinnedTargetPost ?? null,
       bioText: user.bioText || "",
       wallText: wallSignals.wallText || "",
     };
@@ -841,7 +850,42 @@ async function getBridgeMemberMap(groupId, ids, userToken) {
   return result;
 }
 
-async function getBridgeWallSignals(ids, scanDepth, userToken) {
+/**
+ * Recursively searches copy_history (and nested copy_history entries) for a post
+ * that matches the given targetOwnerId + targetPostId.
+ * VK sometimes nests reposts (repost of a repost), so we need to go deeper.
+ */
+function copyHistoryContainsTarget(copyHistory, targetOwnerId, targetPostId) {
+  if (!Array.isArray(copyHistory)) return false;
+  for (const copy of copyHistory) {
+    const oid = Number(copy.owner_id);
+    // VK uses both 'id' and 'post_id' in copy_history entries depending on context
+    const pid = Number(copy.id ?? copy.post_id);
+    if (oid === Number(targetOwnerId) && pid === Number(targetPostId)) return true;
+    // Recurse into nested copy_history
+    if (Array.isArray(copy.copy_history) && copy.copy_history.length > 0) {
+      if (copyHistoryContainsTarget(copy.copy_history, targetOwnerId, targetPostId)) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Returns true if the given wall post is, or contains, the target contest post:
+ *  - direct copy_history match (recursive)
+ *  - text contains the wall-link pattern like "-123456_789"
+ */
+function postIsRepostOfTarget(post, targetOwnerId, targetPostId) {
+  if (targetOwnerId === undefined || targetPostId === undefined) return false;
+  if (Array.isArray(post.copy_history) && post.copy_history.length > 0) {
+    if (copyHistoryContainsTarget(post.copy_history, targetOwnerId, targetPostId)) return true;
+  }
+  // Fallback: text contains the wall-link pattern (e.g. shared via repost with link)
+  if (String(post.text || "").includes(`${targetOwnerId}_${targetPostId}`)) return true;
+  return false;
+}
+
+async function getBridgeWallSignals(ids, scanDepth, userToken, targetOwnerId, targetPostId) {
   const result = new Map();
   let done = 0;
   const startedAt = Date.now();
@@ -868,7 +912,27 @@ async function getBridgeWallSignals(ids, scanDepth, userToken) {
       let repostCount = 0;
       let contestCount = 0;
       let oldestDate = null;
+      let hasPinnedTargetPost = false;
       const wallTexts = [];
+
+      // Separate pinned post from regular posts
+      const pinnedPost = items.find((p) => p.is_pinned === 1);
+      // The first non-pinned post (i.e. the topmost regular post)
+      const firstRegularPost = items.find((p) => p.is_pinned !== 1);
+
+      if (targetOwnerId !== undefined && targetPostId !== undefined) {
+        // PRIMARY: check if the pinned post is a repost of the contest post
+        if (pinnedPost && postIsRepostOfTarget(pinnedPost, targetOwnerId, targetPostId)) {
+          hasPinnedTargetPost = true;
+        }
+        // SECONDARY: if there is NO pinned post at all, check if the topmost
+        // regular post is a repost of the contest (user kept it at top manually)
+        if (!hasPinnedTargetPost && !pinnedPost && firstRegularPost) {
+          if (postIsRepostOfTarget(firstRegularPost, targetOwnerId, targetPostId)) {
+            hasPinnedTargetPost = true;
+          }
+        }
+      }
 
       for (const post of items) {
         if (Number.isInteger(post.date)) {
@@ -898,6 +962,7 @@ async function getBridgeWallSignals(ids, scanDepth, userToken) {
         repostShare: total ? repostCount / total : null,
         ageDays: oldestDate ? Math.max(0, Math.floor((now - oldestDate) / 86400)) : null,
         wallText: wallTexts.join("\n").slice(0, 8000),
+        hasPinnedTargetPost,
       });
     }),
     6,
@@ -1080,6 +1145,7 @@ function hydrateState() {
   els.importScanDepth.value = String(lastState.importScanDepth ?? 60);
   els.maxContests.value = String(lastState.maxContests ?? 3);
   els.participants.value = lastState.participantsText ?? "";
+  if (els.excludedWinners) els.excludedWinners.value = lastState.excludedWinnersText ?? "";
   updatePostMemoryControls();
 
   $$('input[type="checkbox"]', els.modeBox).forEach((box) => {
@@ -1200,6 +1266,7 @@ function loadState() {
       },
       maxContests: 3,
       participantsText: "",
+      excludedWinnersText: "",
     };
   }
 
@@ -1225,8 +1292,40 @@ function loadState() {
       },
       maxContests: 3,
       participantsText: "",
+      excludedWinnersText: "",
     };
   }
+}
+
+/**
+ * Parses lines from the "exclude past winners" textarea into a Set of
+ * normalized identifiers (numeric IDs and VK screen-name slugs).
+ * Accepts lines like:
+ *   https://vk.com/id12345
+ *   https://vk.com/some_name
+ *   id12345
+ *   12345
+ */
+function parseExcludedWinners(text) {
+  const set = new Set();
+  if (!text) return set;
+  for (const line of text.split(/[\n,;]+/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    // Extract slug from URL: vk.com/id123 or vk.com/name
+    const urlMatch = trimmed.match(/vk\.com\/([^/?&#\s]+)/i);
+    const slug = urlMatch ? urlMatch[1] : trimmed;
+    // numeric id
+    const numMatch = slug.match(/^id(\d+)$/i);
+    if (numMatch) {
+      set.add(numMatch[1]); // store as string "123"
+    } else if (/^\d+$/.test(slug)) {
+      set.add(slug);
+    } else {
+      set.add(slug.toLowerCase()); // screen name
+    }
+  }
+  return set;
 }
 
 function collectState() {
@@ -1242,6 +1341,8 @@ function collectState() {
   const winnersCount = getPrizeFieldCount();
   const prizes = getCurrentPrizes().slice(0, winnersCount);
 
+  const excludedWinnersText = els.excludedWinners ? els.excludedWinners.value.trim() : "";
+
   return {
     postUrl: els.postUrl.value.trim(),
     entryModes: entryModes.length ? entryModes : ["repost", "comment", "like"],
@@ -1255,6 +1356,8 @@ function collectState() {
     participantsText: demoMode || importedParticipants ? "" : els.participants.value,
     participantsData: demoMode ? demoParticipants : importedParticipants ?? parseParticipants(els.participants.value),
     importMeta: importedParticipants ? importedMeta : null,
+    excludedWinnersText,
+    excludedWinners: parseExcludedWinners(excludedWinnersText),
   };
 }
 
@@ -1336,6 +1439,7 @@ function normalizeParticipant(raw, index) {
       repostShare: null,
       isCommunity: null,
       isPrivate: null,
+      hasPinnedTargetPost: null,
       bioText: "",
       wallText: "",
     };
@@ -1364,6 +1468,7 @@ function normalizeParticipant(raw, index) {
     repostShare: toNum(participant.repostShare ?? participant.repostRate ?? participant.repostRatio),
     isCommunity: participant.isCommunity ?? participant.community ?? null,
     isPrivate: participant.isPrivate ?? participant.private ?? null,
+    hasPinnedTargetPost: toBool(participant.hasPinnedTargetPost),
     bioText: String(participant.bioText ?? participant.bio ?? participant.about ?? ""),
     wallText: String(participant.wallText ?? participant.wall ?? ""),
   };
@@ -1478,6 +1583,25 @@ function evaluateParticipant(participant, state, requiredActions) {
   const reasons = [];
   const filters = state.filters || {};
 
+  // Check excluded past winners first
+  if (state.excludedWinners && state.excludedWinners.size > 0) {
+    const pid = String(participant.id || "");
+    // Also extract screen name from profileUrl if present
+    const profileUrl = String(participant.profileUrl || "");
+    const urlSlugMatch = profileUrl.match(/vk\.com\/([^/?&#\s]+)/i);
+    const screenSlug = urlSlugMatch ? urlSlugMatch[1].toLowerCase() : null;
+    const idSlugFromUrl = screenSlug ? (screenSlug.match(/^id(\d+)$/i)?.[1] ?? null) : null;
+
+    const isExcluded =
+      state.excludedWinners.has(pid) ||
+      (screenSlug && state.excludedWinners.has(screenSlug)) ||
+      (idSlugFromUrl && state.excludedWinners.has(idSlugFromUrl));
+
+    if (isExcluded) {
+      reasons.push("прошлый победитель");
+    }
+  }
+
   if (requiredActions.length) {
     for (const action of requiredActions) {
       if (participant.actions?.[action] === true) continue;
@@ -1505,14 +1629,19 @@ function evaluateParticipant(participant, state, requiredActions) {
     reasons.push("закрытый профиль");
   }
 
+  if (state.pinnedPost) {
+    // Only disqualify if we actually fetched wall data and pin was definitively absent.
+    // null means wall wasn't fetched (e.g. no strictPrizeHunter and requirePinned was off during that import).
+    if (participant.hasPinnedTargetPost === false) {
+      reasons.push("нет закрепленного поста");
+    }
+    // Do NOT disqualify for null — that would unfairly penalize people whose walls weren't scanned.
+  }
+
   const strictPrizeHunter = Boolean(filters.strictPrizeHunter);
 
   if (strictPrizeHunter && participant.wallContestCount !== null && participant.wallContestCount > state.maxContests) {
     reasons.push(`конкурсов на стене ${participant.wallContestCount} > ${state.maxContests}`);
-  }
-
-  if (!strictPrizeHunter) {
-    return [...new Set(reasons)];
   }
 
   return [...new Set(reasons)];
