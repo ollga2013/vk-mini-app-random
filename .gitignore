@@ -1,7 +1,11 @@
+.env
 .env.local
+.node_modules/
+.dist/
+build/
+*.log
 qa-*.png
 qa-*.webp
-node_modules/
 server-test.err.txt
 server-test.out.txt
 status-test.err.txt

@@ -7,5 +7,9 @@
     "start": "node server.js",
     "serve": "node server.js",
     "deploy": "vk-miniapps-deploy"
+  },
+  "dependencies": {
+    "compression": "^1.7.4",
+    "winston": "^3.12.0"
   }
 }

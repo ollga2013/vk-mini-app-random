@@ -5,6 +5,30 @@ const path = require("path");
 const crypto = require("crypto");
 const { URL } = require("url");
 const { AsyncLocalStorage } = require("async_hooks");
+const compression = require("compression");
+const winston = require("winston");
+
+// Setup logger
+const logger = winston.createLogger({
+  level: "info",
+  format: winston.format.combine(
+    winston.format.timestamp(),
+    winston.format.printf(({ timestamp, level, message }) => `${timestamp} [${level}] ${message}`)
+  ),
+  transports: [new winston.transports.Console()],
+});
+
+// Validate essential environment variables
+function validateEnv() {
+  const required = ["VK_APP_SECRET", "VK_USER_TOKEN", "PORT"];
+  const missing = required.filter((key) => !process.env[key] || !process.env[key].trim());
+  if (missing.length) {
+    logger.error(`Missing required env vars: ${missing.join(", ")}`);
+    process.exit(1);
+  }
+}
+
+validateEnv();
 
 const ROOT_DIR = __dirname;
 loadEnvFile(path.join(ROOT_DIR, ".env.local"));
@@ -172,10 +196,10 @@ async function handleRequest(req, res) {
     return;
   }
 
-  await serveStatic(pathname, res);
+  await serveStatic(pathname, res, req);
 }
 
-async function serveStatic(pathname, res) {
+async function serveStatic(pathname, res, req) {
   const rel = pathname === "/" ? "/index.html" : pathname;
   const absolute = path.resolve(ROOT_DIR, "." + rel);
   if (!absolute.startsWith(ROOT_DIR)) {
@@ -184,12 +208,19 @@ async function serveStatic(pathname, res) {
   }
 
   try {
-    const data = await fs.readFile(absolute);
+    let data = await fs.readFile(absolute);
     const ext = path.extname(absolute).toLowerCase();
-    res.writeHead(200, {
+    const headers = {
       "content-type": contentTypeFor(ext),
       "cache-control": "no-cache",
-    });
+    };
+    const acceptEncoding = req.headers["accept-encoding"] || "";
+    if (acceptEncoding.includes("gzip")) {
+      const zlib = require("zlib");
+      data = zlib.gzipSync(data);
+      headers["content-encoding"] = "gzip";
+    }
+    res.writeHead(200, headers);
     res.end(data);
   } catch {
     sendText(res, 404, "Not found");
