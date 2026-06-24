@@ -688,10 +688,12 @@ async function buildBridgeImportPayload({ state, parsed, actionMap, selectedMode
   const groupId = parsed.ownerId < 0 ? Math.abs(parsed.ownerId) : null;
   const strictPrizeHunter = Boolean(state.filters?.strictPrizeHunter);
   const requirePinned = Boolean(state.pinnedPost);
+  // For pinned check, count=5 is enough: VK always returns the pinned post first with is_pinned=1
+  const wallScanDepth = strictPrizeHunter ? state.importScanDepth : 5;
   const [users, memberMap, wallMap] = await Promise.all([
     getBridgeUsers(ids, userToken),
     groupId ? getBridgeMemberMap(groupId, ids, userToken) : new Map(),
-    (strictPrizeHunter || requirePinned) ? getBridgeWallSignals(ids, strictPrizeHunter ? state.importScanDepth : 3, userToken, parsed.ownerId, parsed.postId) : new Map(),
+    (strictPrizeHunter || requirePinned) ? getBridgeWallSignals(ids, wallScanDepth, userToken, parsed.ownerId, parsed.postId) : new Map(),
   ]);
 
   const participants = users.map((user) => {
@@ -879,30 +881,35 @@ async function getBridgeWallSignals(ids, scanDepth, userToken, targetOwnerId, ta
           oldestDate = oldestDate === null ? post.date : Math.min(oldestDate, post.date);
         }
 
-        const isTopPost = (post === items[0]);
-        if ((post.is_pinned || post.is_pinned === 1 || isTopPost) && targetOwnerId !== undefined && targetPostId !== undefined) {
-          if (Array.isArray(post.copy_history)) {
+        // VK sets is_pinned=1 only on the actual pinned post.
+        // We check if that pinned post is a repost of the contest post.
+        if (post.is_pinned === 1 && targetOwnerId !== undefined && targetPostId !== undefined) {
+          if (Array.isArray(post.copy_history) && post.copy_history.length > 0) {
             for (const copy of post.copy_history) {
               if (Number(copy.owner_id) === Number(targetOwnerId) && Number(copy.id) === Number(targetPostId)) {
                 hasPinnedTargetPost = true;
               }
             }
           }
-          
-          if (!hasPinnedTargetPost && post.text && post.text.includes(`${targetOwnerId}_${targetPostId}`)) {
+          // Fallback: check text for wall link pattern like -123456_789
+          if (!hasPinnedTargetPost && String(post.text || "").includes(`${targetOwnerId}_${targetPostId}`)) {
             hasPinnedTargetPost = true;
           }
+        }
 
-          if (!hasPinnedTargetPost) {
-             const postStr = JSON.stringify(post);
-             if (
-                 (postStr.includes(`"owner_id":${targetOwnerId}`) && postStr.includes(`"id":${targetPostId}`)) ||
-                 (postStr.includes(`"to_id":${targetOwnerId}`) && postStr.includes(`"id":${targetPostId}`)) ||
-                 (postStr.includes(`"from_id":${targetOwnerId}`) && postStr.includes(`"id":${targetPostId}`)) ||
-                 postStr.includes(`${targetOwnerId}_${targetPostId}`)
-             ) {
-                 hasPinnedTargetPost = true;
-             }
+        // Also check ALL reposts in the list (any position) for a match — some
+        // communities require repost to stay at top, but don't actually use pinning.
+        // We only do this secondary check, not as a replacement for is_pinned check.
+        if (!hasPinnedTargetPost && targetOwnerId !== undefined && targetPostId !== undefined) {
+          if (Array.isArray(post.copy_history) && post.copy_history.length > 0) {
+            for (const copy of post.copy_history) {
+              if (Number(copy.owner_id) === Number(targetOwnerId) && Number(copy.id) === Number(targetPostId)) {
+                // Only mark as pinned if this is truly the first (topmost) post AND no actual pinned post was found
+                if (post === items[0] && !items.some(p => p.is_pinned === 1)) {
+                  hasPinnedTargetPost = true;
+                }
+              }
+            }
           }
         }
 
@@ -1540,11 +1547,12 @@ function evaluateParticipant(participant, state, requiredActions) {
   }
 
   if (state.pinnedPost) {
+    // Only disqualify if we actually fetched wall data and pin was definitively absent.
+    // null means wall wasn't fetched (e.g. no strictPrizeHunter and requirePinned was off during that import).
     if (participant.hasPinnedTargetPost === false) {
       reasons.push("нет закрепленного поста");
-    } else if (participant.hasPinnedTargetPost === null) {
-      reasons.push("нет данных по закрепу");
     }
+    // Do NOT disqualify for null — that would unfairly penalize people whose walls weren't scanned.
   }
 
   const strictPrizeHunter = Boolean(filters.strictPrizeHunter);

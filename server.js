@@ -288,10 +288,12 @@ async function buildParticipants({ postUrl, ownerId, postId, selectedModes, sour
   }
 
   const groupId = ownerId < 0 ? Math.abs(ownerId) : null;
+  // For pinned check, count=5 is enough: VK returns the pinned post first with is_pinned=1
+  const wallScanDepth = strictPrizeHunter ? scanDepth : 5;
   const [users, memberMap, wallMap] = await Promise.all([
     getUsers(ids),
     groupId ? getMemberMap(groupId, ids) : new Map(),
-    (strictPrizeHunter || requirePinned) ? getWallSignals(ids, strictPrizeHunter ? scanDepth : 3, ownerId, postId) : new Map(),
+    (strictPrizeHunter || requirePinned) ? getWallSignals(ids, wallScanDepth, ownerId, postId) : new Map(),
   ]);
 
   const participants = users.map((user) => {
@@ -601,30 +603,32 @@ async function getWallSignals(ids, scanDepth, targetOwnerId, targetPostId) {
           oldestDate = oldestDate === null ? post.date : Math.min(oldestDate, post.date);
         }
 
-        const isTopPost = (post === items[0]);
-        if ((post.is_pinned || post.is_pinned === 1 || isTopPost) && targetOwnerId !== undefined && targetPostId !== undefined) {
-          if (Array.isArray(post.copy_history)) {
+        // VK sets is_pinned=1 only on the actual pinned post.
+        // We check if that pinned post is a repost of the contest post.
+        if (post.is_pinned === 1 && targetOwnerId !== undefined && targetPostId !== undefined) {
+          if (Array.isArray(post.copy_history) && post.copy_history.length > 0) {
             for (const copy of post.copy_history) {
               if (Number(copy.owner_id) === Number(targetOwnerId) && Number(copy.id) === Number(targetPostId)) {
                 hasPinnedTargetPost = true;
               }
             }
           }
-          
-          if (!hasPinnedTargetPost && post.text && post.text.includes(`${targetOwnerId}_${targetPostId}`)) {
+          // Fallback: check text for wall link pattern like -123456_789
+          if (!hasPinnedTargetPost && String(post.text || "").includes(`${targetOwnerId}_${targetPostId}`)) {
             hasPinnedTargetPost = true;
           }
+        }
 
-          if (!hasPinnedTargetPost) {
-             const postStr = JSON.stringify(post);
-             if (
-                 (postStr.includes(`"owner_id":${targetOwnerId}`) && postStr.includes(`"id":${targetPostId}`)) ||
-                 (postStr.includes(`"to_id":${targetOwnerId}`) && postStr.includes(`"id":${targetPostId}`)) ||
-                 (postStr.includes(`"from_id":${targetOwnerId}`) && postStr.includes(`"id":${targetPostId}`)) ||
-                 postStr.includes(`${targetOwnerId}_${targetPostId}`)
-             ) {
-                 hasPinnedTargetPost = true;
-             }
+        // Secondary check: first post with no pinned post found = treat as pinned if matches
+        if (!hasPinnedTargetPost && targetOwnerId !== undefined && targetPostId !== undefined) {
+          if (Array.isArray(post.copy_history) && post.copy_history.length > 0) {
+            for (const copy of post.copy_history) {
+              if (Number(copy.owner_id) === Number(targetOwnerId) && Number(copy.id) === Number(targetPostId)) {
+                if (post === items[0] && !items.some(p => p.is_pinned === 1)) {
+                  hasPinnedTargetPost = true;
+                }
+              }
+            }
           }
         }
 
