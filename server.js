@@ -575,6 +575,38 @@ async function getMemberMap(groupId, ids) {
   return result;
 }
 
+/**
+ * Recursively searches copy_history (and nested copy_history entries) for a post
+ * that matches the given targetOwnerId + targetPostId.
+ * VK sometimes nests reposts, so we go deeper.
+ */
+function copyHistoryContainsTarget(copyHistory, targetOwnerId, targetPostId) {
+  if (!Array.isArray(copyHistory)) return false;
+  for (const copy of copyHistory) {
+    const oid = Number(copy.owner_id);
+    // VK uses both 'id' and 'post_id' in copy_history entries depending on context
+    const pid = Number(copy.id ?? copy.post_id);
+    if (oid === Number(targetOwnerId) && pid === Number(targetPostId)) return true;
+    if (Array.isArray(copy.copy_history) && copy.copy_history.length > 0) {
+      if (copyHistoryContainsTarget(copy.copy_history, targetOwnerId, targetPostId)) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Returns true if the given wall post is a repost of the target contest post.
+ * Checks copy_history recursively and falls back to text link pattern.
+ */
+function postIsRepostOfTarget(post, targetOwnerId, targetPostId) {
+  if (targetOwnerId === undefined || targetPostId === undefined) return false;
+  if (Array.isArray(post.copy_history) && post.copy_history.length > 0) {
+    if (copyHistoryContainsTarget(post.copy_history, targetOwnerId, targetPostId)) return true;
+  }
+  if (String(post.text || "").includes(`${targetOwnerId}_${targetPostId}`)) return true;
+  return false;
+}
+
 async function getWallSignals(ids, scanDepth, targetOwnerId, targetPostId) {
   const result = new Map();
   await runLimited(
@@ -598,38 +630,28 @@ async function getWallSignals(ids, scanDepth, targetOwnerId, targetPostId) {
       let hasPinnedTargetPost = false;
       const wallTexts = [];
 
-      for (const post of items) {
-        if (Number.isInteger(post.date)) {
-          oldestDate = oldestDate === null ? post.date : Math.min(oldestDate, post.date);
-        }
+      // Separate pinned post from regular posts
+      const pinnedPost = items.find((p) => p.is_pinned === 1);
+      // The first non-pinned post (topmost regular post)
+      const firstRegularPost = items.find((p) => p.is_pinned !== 1);
 
-        // VK sets is_pinned=1 only on the actual pinned post.
-        // We check if that pinned post is a repost of the contest post.
-        if (post.is_pinned === 1 && targetOwnerId !== undefined && targetPostId !== undefined) {
-          if (Array.isArray(post.copy_history) && post.copy_history.length > 0) {
-            for (const copy of post.copy_history) {
-              if (Number(copy.owner_id) === Number(targetOwnerId) && Number(copy.id) === Number(targetPostId)) {
-                hasPinnedTargetPost = true;
-              }
-            }
-          }
-          // Fallback: check text for wall link pattern like -123456_789
-          if (!hasPinnedTargetPost && String(post.text || "").includes(`${targetOwnerId}_${targetPostId}`)) {
+      if (targetOwnerId !== undefined && targetPostId !== undefined) {
+        // PRIMARY: check if the pinned post is a repost of the contest post
+        if (pinnedPost && postIsRepostOfTarget(pinnedPost, targetOwnerId, targetPostId)) {
+          hasPinnedTargetPost = true;
+        }
+        // SECONDARY: if there is NO pinned post at all, check if the topmost
+        // regular post is a repost of the contest (user kept it at top manually)
+        if (!hasPinnedTargetPost && !pinnedPost && firstRegularPost) {
+          if (postIsRepostOfTarget(firstRegularPost, targetOwnerId, targetPostId)) {
             hasPinnedTargetPost = true;
           }
         }
+      }
 
-        // Secondary check: first post with no pinned post found = treat as pinned if matches
-        if (!hasPinnedTargetPost && targetOwnerId !== undefined && targetPostId !== undefined) {
-          if (Array.isArray(post.copy_history) && post.copy_history.length > 0) {
-            for (const copy of post.copy_history) {
-              if (Number(copy.owner_id) === Number(targetOwnerId) && Number(copy.id) === Number(targetPostId)) {
-                if (post === items[0] && !items.some(p => p.is_pinned === 1)) {
-                  hasPinnedTargetPost = true;
-                }
-              }
-            }
-          }
+      for (const post of items) {
+        if (Number.isInteger(post.date)) {
+          oldestDate = oldestDate === null ? post.date : Math.min(oldestDate, post.date);
         }
 
         const text = String(post.text || "").toLowerCase();

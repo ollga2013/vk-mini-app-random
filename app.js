@@ -53,6 +53,7 @@ const els = {
   clearParticipants: $("#clear-participants"),
   jsonFile: $("#json-file"),
   canvas: $("#export-canvas"),
+  excludedWinners: $("#excluded-winners"),
 };
 
 const actionLabels = {
@@ -177,6 +178,9 @@ function bindEvents() {
     els.pinnedPost,
     els.maxContests,
   ].forEach((node) => node.addEventListener("input", persistAndRefresh));
+  if (els.excludedWinners) {
+    els.excludedWinners.addEventListener("input", persistAndRefresh);
+  }
   const syncPrizesAndRefresh = () => {
     renderPrizeInputs();
     persistAndRefresh();
@@ -846,6 +850,41 @@ async function getBridgeMemberMap(groupId, ids, userToken) {
   return result;
 }
 
+/**
+ * Recursively searches copy_history (and nested copy_history entries) for a post
+ * that matches the given targetOwnerId + targetPostId.
+ * VK sometimes nests reposts (repost of a repost), so we need to go deeper.
+ */
+function copyHistoryContainsTarget(copyHistory, targetOwnerId, targetPostId) {
+  if (!Array.isArray(copyHistory)) return false;
+  for (const copy of copyHistory) {
+    const oid = Number(copy.owner_id);
+    // VK uses both 'id' and 'post_id' in copy_history entries depending on context
+    const pid = Number(copy.id ?? copy.post_id);
+    if (oid === Number(targetOwnerId) && pid === Number(targetPostId)) return true;
+    // Recurse into nested copy_history
+    if (Array.isArray(copy.copy_history) && copy.copy_history.length > 0) {
+      if (copyHistoryContainsTarget(copy.copy_history, targetOwnerId, targetPostId)) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Returns true if the given wall post is, or contains, the target contest post:
+ *  - direct copy_history match (recursive)
+ *  - text contains the wall-link pattern like "-123456_789"
+ */
+function postIsRepostOfTarget(post, targetOwnerId, targetPostId) {
+  if (targetOwnerId === undefined || targetPostId === undefined) return false;
+  if (Array.isArray(post.copy_history) && post.copy_history.length > 0) {
+    if (copyHistoryContainsTarget(post.copy_history, targetOwnerId, targetPostId)) return true;
+  }
+  // Fallback: text contains the wall-link pattern (e.g. shared via repost with link)
+  if (String(post.text || "").includes(`${targetOwnerId}_${targetPostId}`)) return true;
+  return false;
+}
+
 async function getBridgeWallSignals(ids, scanDepth, userToken, targetOwnerId, targetPostId) {
   const result = new Map();
   let done = 0;
@@ -876,41 +915,28 @@ async function getBridgeWallSignals(ids, scanDepth, userToken, targetOwnerId, ta
       let hasPinnedTargetPost = false;
       const wallTexts = [];
 
-      for (const post of items) {
-        if (Number.isInteger(post.date)) {
-          oldestDate = oldestDate === null ? post.date : Math.min(oldestDate, post.date);
-        }
+      // Separate pinned post from regular posts
+      const pinnedPost = items.find((p) => p.is_pinned === 1);
+      // The first non-pinned post (i.e. the topmost regular post)
+      const firstRegularPost = items.find((p) => p.is_pinned !== 1);
 
-        // VK sets is_pinned=1 only on the actual pinned post.
-        // We check if that pinned post is a repost of the contest post.
-        if (post.is_pinned === 1 && targetOwnerId !== undefined && targetPostId !== undefined) {
-          if (Array.isArray(post.copy_history) && post.copy_history.length > 0) {
-            for (const copy of post.copy_history) {
-              if (Number(copy.owner_id) === Number(targetOwnerId) && Number(copy.id) === Number(targetPostId)) {
-                hasPinnedTargetPost = true;
-              }
-            }
-          }
-          // Fallback: check text for wall link pattern like -123456_789
-          if (!hasPinnedTargetPost && String(post.text || "").includes(`${targetOwnerId}_${targetPostId}`)) {
+      if (targetOwnerId !== undefined && targetPostId !== undefined) {
+        // PRIMARY: check if the pinned post is a repost of the contest post
+        if (pinnedPost && postIsRepostOfTarget(pinnedPost, targetOwnerId, targetPostId)) {
+          hasPinnedTargetPost = true;
+        }
+        // SECONDARY: if there is NO pinned post at all, check if the topmost
+        // regular post is a repost of the contest (user kept it at top manually)
+        if (!hasPinnedTargetPost && !pinnedPost && firstRegularPost) {
+          if (postIsRepostOfTarget(firstRegularPost, targetOwnerId, targetPostId)) {
             hasPinnedTargetPost = true;
           }
         }
+      }
 
-        // Also check ALL reposts in the list (any position) for a match — some
-        // communities require repost to stay at top, but don't actually use pinning.
-        // We only do this secondary check, not as a replacement for is_pinned check.
-        if (!hasPinnedTargetPost && targetOwnerId !== undefined && targetPostId !== undefined) {
-          if (Array.isArray(post.copy_history) && post.copy_history.length > 0) {
-            for (const copy of post.copy_history) {
-              if (Number(copy.owner_id) === Number(targetOwnerId) && Number(copy.id) === Number(targetPostId)) {
-                // Only mark as pinned if this is truly the first (topmost) post AND no actual pinned post was found
-                if (post === items[0] && !items.some(p => p.is_pinned === 1)) {
-                  hasPinnedTargetPost = true;
-                }
-              }
-            }
-          }
+      for (const post of items) {
+        if (Number.isInteger(post.date)) {
+          oldestDate = oldestDate === null ? post.date : Math.min(oldestDate, post.date);
         }
 
         const text = String(post.text || "").toLowerCase();
@@ -1119,6 +1145,7 @@ function hydrateState() {
   els.importScanDepth.value = String(lastState.importScanDepth ?? 60);
   els.maxContests.value = String(lastState.maxContests ?? 3);
   els.participants.value = lastState.participantsText ?? "";
+  if (els.excludedWinners) els.excludedWinners.value = lastState.excludedWinnersText ?? "";
   updatePostMemoryControls();
 
   $$('input[type="checkbox"]', els.modeBox).forEach((box) => {
@@ -1239,6 +1266,7 @@ function loadState() {
       },
       maxContests: 3,
       participantsText: "",
+      excludedWinnersText: "",
     };
   }
 
@@ -1264,8 +1292,40 @@ function loadState() {
       },
       maxContests: 3,
       participantsText: "",
+      excludedWinnersText: "",
     };
   }
+}
+
+/**
+ * Parses lines from the "exclude past winners" textarea into a Set of
+ * normalized identifiers (numeric IDs and VK screen-name slugs).
+ * Accepts lines like:
+ *   https://vk.com/id12345
+ *   https://vk.com/some_name
+ *   id12345
+ *   12345
+ */
+function parseExcludedWinners(text) {
+  const set = new Set();
+  if (!text) return set;
+  for (const line of text.split(/[\n,;]+/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    // Extract slug from URL: vk.com/id123 or vk.com/name
+    const urlMatch = trimmed.match(/vk\.com\/([^/?&#\s]+)/i);
+    const slug = urlMatch ? urlMatch[1] : trimmed;
+    // numeric id
+    const numMatch = slug.match(/^id(\d+)$/i);
+    if (numMatch) {
+      set.add(numMatch[1]); // store as string "123"
+    } else if (/^\d+$/.test(slug)) {
+      set.add(slug);
+    } else {
+      set.add(slug.toLowerCase()); // screen name
+    }
+  }
+  return set;
 }
 
 function collectState() {
@@ -1281,6 +1341,8 @@ function collectState() {
   const winnersCount = getPrizeFieldCount();
   const prizes = getCurrentPrizes().slice(0, winnersCount);
 
+  const excludedWinnersText = els.excludedWinners ? els.excludedWinners.value.trim() : "";
+
   return {
     postUrl: els.postUrl.value.trim(),
     entryModes: entryModes.length ? entryModes : ["repost", "comment", "like"],
@@ -1294,6 +1356,8 @@ function collectState() {
     participantsText: demoMode || importedParticipants ? "" : els.participants.value,
     participantsData: demoMode ? demoParticipants : importedParticipants ?? parseParticipants(els.participants.value),
     importMeta: importedParticipants ? importedMeta : null,
+    excludedWinnersText,
+    excludedWinners: parseExcludedWinners(excludedWinnersText),
   };
 }
 
@@ -1519,6 +1583,25 @@ function evaluateParticipant(participant, state, requiredActions) {
   const reasons = [];
   const filters = state.filters || {};
 
+  // Check excluded past winners first
+  if (state.excludedWinners && state.excludedWinners.size > 0) {
+    const pid = String(participant.id || "");
+    // Also extract screen name from profileUrl if present
+    const profileUrl = String(participant.profileUrl || "");
+    const urlSlugMatch = profileUrl.match(/vk\.com\/([^/?&#\s]+)/i);
+    const screenSlug = urlSlugMatch ? urlSlugMatch[1].toLowerCase() : null;
+    const idSlugFromUrl = screenSlug ? (screenSlug.match(/^id(\d+)$/i)?.[1] ?? null) : null;
+
+    const isExcluded =
+      state.excludedWinners.has(pid) ||
+      (screenSlug && state.excludedWinners.has(screenSlug)) ||
+      (idSlugFromUrl && state.excludedWinners.has(idSlugFromUrl));
+
+    if (isExcluded) {
+      reasons.push("прошлый победитель");
+    }
+  }
+
   if (requiredActions.length) {
     for (const action of requiredActions) {
       if (participant.actions?.[action] === true) continue;
@@ -1559,10 +1642,6 @@ function evaluateParticipant(participant, state, requiredActions) {
 
   if (strictPrizeHunter && participant.wallContestCount !== null && participant.wallContestCount > state.maxContests) {
     reasons.push(`конкурсов на стене ${participant.wallContestCount} > ${state.maxContests}`);
-  }
-
-  if (!strictPrizeHunter) {
-    return [...new Set(reasons)];
   }
 
   return [...new Set(reasons)];
