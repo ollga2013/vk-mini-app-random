@@ -241,7 +241,9 @@ async function enrichParticipants({ postUrl, entryModes, scanDepth, actionRows }
 }
 
 async function buildParticipants({ postUrl, ownerId, postId, selectedModes, sourceMaps, scanDepth, meta = {} }) {
-  const ids = Array.from(sourceMaps.keys());
+  const ids = Array.from(sourceMaps.entries())
+    .filter(([id, flags]) => selectedModes.every((mode) => flags[mode]))
+    .map(([id]) => id);
 
   if (!ids.length) {
     return {

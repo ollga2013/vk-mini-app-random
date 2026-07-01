@@ -460,7 +460,9 @@ function canUseLocalApi() {
 }
 
 async function buildBridgeImportPayload({ state, parsed, actionMap, selectedModes, userToken }) {
-  const ids = Array.from(actionMap.keys());
+  const ids = Array.from(actionMap.entries())
+    .filter(([id, flags]) => selectedModes.every((mode) => flags[mode]))
+    .map(([id]) => id);
   if (!ids.length) {
     return {
       participants: [],
