@@ -1403,24 +1403,21 @@ function recompute() {
     excluded,
     winners,
     reasonCounts,
-    totalParticipants: getTotalParticipantsCount({ ...state, participants: evaluated }),
+    totalParticipants: eligible.length,
     requiredActions,
   };
 }
 
 function getTotalParticipantsCount(result) {
   const meta = result.importMeta || {};
-  const fallback = Math.max(
-    result.participants?.length || 0,
-    toNum(meta.importedCount) || 0
-  );
   if (meta.sourceCounts && Object.keys(meta.sourceCounts).length > 0) {
-    return Math.max(fallback, totalFromSourceCounts(meta.sourceCounts, fallback));
+    const minCount = totalFromSourceCounts(meta.sourceCounts, result.participants?.length || 0);
+    return minCount;
   }
   if (toNum(meta.totalParticipants) > 0) {
-    return Math.max(fallback, toNum(meta.totalParticipants));
+    return toNum(meta.totalParticipants);
   }
-  return fallback;
+  return result.participants?.length || 0;
 }
 
 function totalFromSourceCounts(sourceCounts, fallback) {
