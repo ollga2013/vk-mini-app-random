@@ -1396,11 +1396,25 @@ function recompute() {
   const winners = shuffle([...eligible]).slice(0, winnerCount);
   const reasonCounts = tallyReasons(excluded);
 
-  // Участников всего = кто выполнил все условия участия (репост/лайк/комментарий),
-  // без учёта дополнительных фильтров (возраст, членство и т.д.)
-  const fulfilledAllConditions = evaluated.filter((item) =>
-    requiredActions.every((action) => item.actions?.[action] === true)
-  ).length;
+  // Участников всего = минимум из сырых счётчиков VK API по каждому условию.
+  // Например: 11 лайков, 9 комментов, 10 репостов → 9.
+  // Это самый точный показатель: VK знает точное кол-во, а загруженные профили могут быть неполными.
+  const importMeta = state.importMeta || {};
+  let totalParticipants;
+  if (importMeta.sourceCounts && Object.keys(importMeta.sourceCounts).length > 0) {
+    // Берём только счётчики для выбранных режимов
+    const relevantCounts = requiredActions
+      .map((action) => importMeta.sourceCounts[action])
+      .filter(Number.isFinite);
+    totalParticipants = relevantCounts.length > 0
+      ? Math.min(...relevantCounts)
+      : evaluated.filter((item) => requiredActions.every((a) => item.actions?.[a] === true)).length;
+  } else {
+    // Если sourceCounts недоступны — считаем из загруженных данных
+    totalParticipants = evaluated.filter((item) =>
+      requiredActions.every((action) => item.actions?.[action] === true)
+    ).length;
+  }
 
   return {
     ...state,
@@ -1409,7 +1423,7 @@ function recompute() {
     excluded,
     winners,
     reasonCounts,
-    totalParticipants: fulfilledAllConditions,
+    totalParticipants,
     requiredActions,
   };
 }
