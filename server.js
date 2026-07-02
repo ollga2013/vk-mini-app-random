@@ -374,8 +374,9 @@ async function collectSourceMaps(ownerId, postId, selectedModes) {
   let officialCounts = { repost: 0, comment: 0, like: 0 };
   try {
     const postData = await vkCall("wall.getById", { posts: `${ownerId}_${postId}` });
-    if (postData && postData[0]) {
-      const post = postData[0];
+    const posts = postData?.items || postData;
+    if (posts && posts[0]) {
+      const post = posts[0];
       officialCounts.repost = post.reposts?.count ?? 0;
       officialCounts.comment = post.comments?.count ?? 0;
       officialCounts.like = post.likes?.count ?? 0;

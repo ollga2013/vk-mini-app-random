@@ -589,8 +589,9 @@ async function importFromVkBridge(state, userToken) {
     const postRes = await vkApiCall("wall.getById", {
       posts: `${parsed.ownerId}_${parsed.postId}`
     }, userToken);
-    if (postRes && postRes[0]) {
-      const post = postRes[0];
+    const posts = postRes?.items || postRes;
+    if (posts && posts[0]) {
+      const post = posts[0];
       officialCounts.repost = post.reposts?.count ?? 0;
       officialCounts.comment = post.comments?.count ?? 0;
       officialCounts.like = post.likes?.count ?? 0;
