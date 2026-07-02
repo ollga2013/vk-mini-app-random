@@ -1,4 +1,5 @@
 const STORAGE_KEY = "vk-winner-mini-app:v4";
+const META_KEY = "vk-winner-mini-app:meta";
 const DEFAULT_VK_APP_ID = 54620998;
 const VK_IMPORT_SCOPE = "wall,groups";
 const VK_API_VERSION = "5.199";
@@ -145,7 +146,9 @@ const sampleTextParticipants = sampleParticipants.map(({ avatarUrl, ...rest }) =
 let demoMode = false;
 let demoParticipants = [];
 let importedParticipants = null;
-let importedMeta = null;
+let importedMeta = (() => {
+  try { return JSON.parse(localStorage.getItem(META_KEY) || "null"); } catch { return null; }
+})();
 let importServerOk = false;
 let autoImportTimer = null;
 let importRequestSeq = 0;
@@ -1240,8 +1243,14 @@ function saveState() {
   updatePostMemoryControls();
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(persistable));
+    if (importedMeta) {
+      localStorage.setItem(META_KEY, JSON.stringify(importedMeta));
+    } else {
+      localStorage.removeItem(META_KEY);
+    }
   } catch {
     localStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem(META_KEY);
   }
 }
 
@@ -1355,7 +1364,7 @@ function collectState() {
     maxContests: clampInt(els.maxContests.value, 0, 1000, 3),
     participantsText: demoMode || importedParticipants ? "" : els.participants.value,
     participantsData: demoMode ? demoParticipants : importedParticipants ?? parseParticipants(els.participants.value),
-    importMeta: importedParticipants ? importedMeta : null,
+    importMeta: importedMeta || null,
     excludedWinnersText,
     excludedWinners: parseExcludedWinners(excludedWinnersText),
   };
