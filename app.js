@@ -585,6 +585,7 @@ async function importFromVkBridge(state, userToken) {
   const tasks = [];
 
   let officialCounts = { repost: 0, comment: 0, like: 0 };
+  let debugNote = "";
   try {
     const postRes = await vkApiCall("wall.getById", {
       posts: `${parsed.ownerId}_${parsed.postId}`
@@ -595,9 +596,13 @@ async function importFromVkBridge(state, userToken) {
       officialCounts.repost = post.reposts?.count ?? 0;
       officialCounts.comment = post.comments?.count ?? 0;
       officialCounts.like = post.likes?.count ?? 0;
+      debugNote = `[VK API OK: R=${officialCounts.repost}, C=${officialCounts.comment}, L=${officialCounts.like}]`;
+    } else {
+      debugNote = `[VK API Empty: ${JSON.stringify(postRes)}]`;
     }
   } catch (e) {
     console.error("Failed to fetch official post counts via wall.getById", e);
+    debugNote = `[VK API Error: ${e.message || e}]`;
   }
 
   if (modes.includes("repost")) {
@@ -646,7 +651,7 @@ async function importFromVkBridge(state, userToken) {
 
   await runBridgeLimited(tasks, Math.min(BRIDGE_MAX_CONCURRENT, tasks.length || 1));
 
-  return buildBridgeImportPayload({
+  const payload = buildBridgeImportPayload({
     state,
     parsed,
     actionMap,
@@ -654,6 +659,12 @@ async function importFromVkBridge(state, userToken) {
     sourceCounts,
     userToken,
   });
+
+  if (payload.meta) {
+    payload.meta.note = (payload.meta.note || "") + " " + debugNote;
+  }
+
+  return payload;
 }
 
 function getApiBaseUrl() {
