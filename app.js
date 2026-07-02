@@ -660,10 +660,6 @@ async function importFromVkBridge(state, userToken) {
     userToken,
   });
 
-  if (payload.meta) {
-    payload.meta.note = (payload.meta.note || "") + " " + debugNote;
-  }
-
   return payload;
 }
 
