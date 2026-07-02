@@ -371,10 +371,23 @@ async function collectSourceMaps(ownerId, postId, selectedModes) {
   const sourceCounts = {};
   const tasks = [];
 
+  let officialCounts = { repost: 0, comment: 0, like: 0 };
+  try {
+    const postData = await vkCall("wall.getById", { posts: `${ownerId}_${postId}` });
+    if (postData && postData[0]) {
+      const post = postData[0];
+      officialCounts.repost = post.reposts?.count ?? 0;
+      officialCounts.comment = post.comments?.count ?? 0;
+      officialCounts.like = post.likes?.count ?? 0;
+    }
+  } catch (e) {
+    console.error("Failed to fetch official post counts via wall.getById", e);
+  }
+
   if (selectedModes.includes("repost")) {
     tasks.push(async () => {
       const data = await fetchReposters(ownerId, postId);
-      sourceCounts.repost = data.total;
+      sourceCounts.repost = Math.max(data.total, officialCounts.repost);
       data.ids.forEach((id) => {
         const entry = ensureAction(map, id);
         entry.repost = true;
@@ -385,7 +398,7 @@ async function collectSourceMaps(ownerId, postId, selectedModes) {
   if (selectedModes.includes("comment")) {
     tasks.push(async () => {
       const data = await fetchCommenters(ownerId, postId);
-      sourceCounts.comment = data.total;
+      sourceCounts.comment = Math.max(data.total, officialCounts.comment);
       data.ids.forEach((id) => {
         const entry = ensureAction(map, id);
         entry.comment = true;
@@ -396,7 +409,7 @@ async function collectSourceMaps(ownerId, postId, selectedModes) {
   if (selectedModes.includes("like")) {
     tasks.push(async () => {
       const data = await fetchLikers(ownerId, postId);
-      sourceCounts.like = data.total;
+      sourceCounts.like = Math.max(data.total, officialCounts.like);
       data.ids.forEach((id) => {
         const entry = ensureAction(map, id);
         entry.like = true;

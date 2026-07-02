@@ -584,11 +584,26 @@ async function importFromVkBridge(state, userToken) {
   const sourceCounts = {};
   const tasks = [];
 
+  let officialCounts = { repost: 0, comment: 0, like: 0 };
+  try {
+    const postRes = await vkApiCall("wall.getById", {
+      posts: `${parsed.ownerId}_${parsed.postId}`
+    }, userToken);
+    if (postRes && postRes[0]) {
+      const post = postRes[0];
+      officialCounts.repost = post.reposts?.count ?? 0;
+      officialCounts.comment = post.comments?.count ?? 0;
+      officialCounts.like = post.likes?.count ?? 0;
+    }
+  } catch (e) {
+    console.error("Failed to fetch official post counts via wall.getById", e);
+  }
+
   if (modes.includes("repost")) {
     tasks.push(async () => {
       setApiStatus("Собираю репосты из VK...");
       const data = await getBridgeRepostData(parsed, userToken);
-      sourceCounts.repost = data.total;
+      sourceCounts.repost = Math.max(data.total, officialCounts.repost);
       data.ids.forEach((id) => ensureActionRow(actionMap, id).repost = true);
     });
   }
@@ -605,7 +620,7 @@ async function importFromVkBridge(state, userToken) {
           sort: "desc",
         }, userToken),
       );
-      sourceCounts.comment = data.total;
+      sourceCounts.comment = Math.max(data.total, officialCounts.comment);
       data.ids.forEach((id) => ensureActionRow(actionMap, id).comment = true);
     });
   }
@@ -623,7 +638,7 @@ async function importFromVkBridge(state, userToken) {
           offset,
         }, userToken),
       );
-      sourceCounts.like = data.total;
+      sourceCounts.like = Math.max(data.total, officialCounts.like);
       data.ids.forEach((id) => ensureActionRow(actionMap, id).like = true);
     });
   }
