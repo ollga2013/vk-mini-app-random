@@ -2077,7 +2077,7 @@ function resolveAvatarSource(url) {
   if (!url) return "";
   if (/^data:|^blob:/i.test(url)) return url;
   if (/^https?:\/\//i.test(url)) {
-    return `/api/image?url=${encodeURIComponent(url)}`;
+    return apiUrl(`/api/image?url=${encodeURIComponent(url)}`);
   }
   return url;
 }
