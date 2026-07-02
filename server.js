@@ -409,7 +409,9 @@ async function collectSourceMaps(ownerId, postId, selectedModes) {
 }
 
 function totalFromSourceCounts(sourceCounts, fallback) {
-  return Math.max(fallback, ...Object.values(sourceCounts || {}).filter(Number.isFinite));
+  const counts = Object.values(sourceCounts || {}).filter(Number.isFinite);
+  if (counts.length === 0) return fallback;
+  return Math.min(...counts);
 }
 
 function ensureAction(map, id) {

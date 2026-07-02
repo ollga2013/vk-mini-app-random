@@ -1420,7 +1420,9 @@ function getTotalParticipantsCount(result) {
 }
 
 function totalFromSourceCounts(sourceCounts, fallback) {
-  return Math.max(fallback, ...Object.values(sourceCounts || {}).filter(Number.isFinite));
+  const counts = Object.values(sourceCounts || {}).filter(Number.isFinite);
+  if (counts.length === 0) return fallback;
+  return Math.min(...counts);
 }
 
 function normalizeParticipant(raw, index) {
@@ -2075,7 +2077,7 @@ function resolveAvatarSource(url) {
   if (!url) return "";
   if (/^data:|^blob:/i.test(url)) return url;
   if (/^https?:\/\//i.test(url)) {
-    return `https://wsrv.nl/?url=${encodeURIComponent(url)}&output=webp`;
+    return `/api/image?url=${encodeURIComponent(url)}`;
   }
   return url;
 }
