@@ -1396,6 +1396,12 @@ function recompute() {
   const winners = shuffle([...eligible]).slice(0, winnerCount);
   const reasonCounts = tallyReasons(excluded);
 
+  // Участников всего = кто выполнил все условия участия (репост/лайк/комментарий),
+  // без учёта дополнительных фильтров (возраст, членство и т.д.)
+  const fulfilledAllConditions = evaluated.filter((item) =>
+    requiredActions.every((action) => item.actions?.[action] === true)
+  ).length;
+
   return {
     ...state,
     participants: evaluated,
@@ -1403,7 +1409,7 @@ function recompute() {
     excluded,
     winners,
     reasonCounts,
-    totalParticipants: eligible.length,
+    totalParticipants: fulfilledAllConditions,
     requiredActions,
   };
 }
