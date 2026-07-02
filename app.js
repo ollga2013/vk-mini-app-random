@@ -1410,13 +1410,17 @@ function recompute() {
 
 function getTotalParticipantsCount(result) {
   const meta = result.importMeta || {};
-  const sourceCounts = meta.sourceCounts && typeof meta.sourceCounts === "object" ? Object.values(meta.sourceCounts) : [];
-  return Math.max(
+  const fallback = Math.max(
     result.participants?.length || 0,
-    toNum(meta.totalParticipants) || 0,
-    toNum(meta.importedCount) || 0,
-    ...sourceCounts.map((value) => toNum(value) || 0),
+    toNum(meta.importedCount) || 0
   );
+  if (meta.sourceCounts && Object.keys(meta.sourceCounts).length > 0) {
+    return Math.max(fallback, totalFromSourceCounts(meta.sourceCounts, fallback));
+  }
+  if (toNum(meta.totalParticipants) > 0) {
+    return Math.max(fallback, toNum(meta.totalParticipants));
+  }
+  return fallback;
 }
 
 function totalFromSourceCounts(sourceCounts, fallback) {
@@ -2077,7 +2081,11 @@ function resolveAvatarSource(url) {
   if (!url) return "";
   if (/^data:|^blob:/i.test(url)) return url;
   if (/^https?:\/\//i.test(url)) {
-    return apiUrl(`/api/image?url=${encodeURIComponent(url)}`);
+    if (canUseBackendApi()) {
+      return apiUrl(`/api/image?url=${encodeURIComponent(url)}`);
+    } else {
+      return `https://wsrv.nl/?url=${encodeURIComponent(url)}&output=webp`;
+    }
   }
   return url;
 }
