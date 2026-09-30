@@ -818,7 +818,7 @@ async function fetchBridgeWallRepostIds(parsed, userToken, pageSize = 100, maxIt
 async function getBridgeUsers(ids, userToken) {
   const rows = [];
   await runBridgeLimited(
-    chunkItems(ids, 1000).map((batch) => async () => {
+    chunkItems(ids, 100).map((batch) => async () => {
       const data = await vkApiCall("users.get", {
         user_ids: batch.join(","),
         fields: [

@@ -543,7 +543,7 @@ function extractRepostOwnerIds(response) {
 }
 
 async function getUsers(ids) {
-  const chunks = chunk(ids, 1000);
+  const chunks = chunk(ids, 100);
   const rows = [];
   await runLimited(
     chunks.map((batch) => async () => {
