@@ -75,18 +75,6 @@ const els = {
   storyCanvas: $("#story-canvas"),
   backupWinnersSection: $("#backup-winners-section"),
   backupWinnersList: $("#backup-winners-list"),
-  openRoulette: $("#open-roulette"),
-  rouletteModal: $("#roulette-modal"),
-  rouletteClose: $("#roulette-close"),
-  rouletteCanvas: $("#roulette-canvas"),
-  rouletteStatus: $("#roulette-status"),
-  rouletteSpinBtn: $("#roulette-spin-btn"),
-  rouletteSoundToggle: $("#roulette-sound-toggle"),
-  rouletteRecordBtn: $("#roulette-record-btn"),
-  rouletteRevealAll: $("#roulette-reveal-all"),
-  rouletteRevealCard: $("#roulette-reveal-card"),
-  revealPlaceBadge: $("#reveal-place-badge"),
-  revealWinnerInfo: $("#reveal-winner-info"),
   confettiCanvas: $("#confetti-canvas"),
 };
 
@@ -110,6 +98,9 @@ const sampleParticipants = [
     repostShare: 0.14,
     isCommunity: false,
     isPrivate: false,
+    canWritePm: true,
+    hasPhoto: true,
+    commentText: "Участвую в конкурсе! @friend",
     wallText: "Фото, работа, семья",
   },
   {
@@ -125,6 +116,9 @@ const sampleParticipants = [
     repostShare: 0.26,
     isCommunity: false,
     isPrivate: false,
+    canWritePm: true,
+    hasPhoto: true,
+    commentText: "Отличный розыгрыш, участвую! [id1024|Анна]",
     wallText: "Путешествия, техника",
   },
   {
@@ -140,6 +134,9 @@ const sampleParticipants = [
     repostShare: 0.91,
     isCommunity: false,
     isPrivate: false,
+    canWritePm: true,
+    hasPhoto: true,
+    commentText: "Приз мне!",
     wallText: "конкурс giveaway приз",
   },
   {
@@ -155,6 +152,9 @@ const sampleParticipants = [
     repostShare: 0.97,
     isCommunity: false,
     isPrivate: true,
+    canWritePm: false,
+    hasPhoto: false,
+    commentText: "спам",
     wallText: "конкурс конкурс конкурс",
   },
   {
@@ -170,6 +170,9 @@ const sampleParticipants = [
     repostShare: 0.03,
     isCommunity: false,
     isPrivate: false,
+    canWritePm: true,
+    hasPhoto: true,
+    commentText: "Очень жду итоги конкурса! @club",
     wallText: "Книги, работа",
   },
 ];
@@ -179,11 +182,7 @@ const sampleTextParticipants = sampleParticipants.map(({ avatarUrl, ...rest }) =
 
 // --- Cryptography, Audio & Visual Effects ---
 let currentDrawSeed = getRandomHex(16);
-let soundEnabled = true;
-let audioCtx = null;
-let mediaRecorder = null;
-let recordedChunks = [];
-let isRecordingVideo = false;
+
 
 function sha256Sync(str) {
   const ascii = unescape(encodeURIComponent(str));
@@ -240,57 +239,7 @@ function getRandomHex(len = 16) {
   return Math.random().toString(16).slice(2) + Math.random().toString(16).slice(2);
 }
 
-function getAudioContext() {
-  if (!audioCtx && typeof window.AudioContext !== "undefined") {
-    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  }
-  if (audioCtx && audioCtx.state === "suspended") {
-    audioCtx.resume().catch(() => {});
-  }
-  return audioCtx;
-}
 
-function playTickSound() {
-  if (!soundEnabled) return;
-  try {
-    const ctx = getAudioContext();
-    if (!ctx) return;
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.type = "sine";
-    osc.frequency.setValueAtTime(520, ctx.currentTime);
-    osc.frequency.exponentialRampToValueAtTime(160, ctx.currentTime + 0.035);
-    gain.gain.setValueAtTime(0.09, ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.035);
-    osc.connect(gain);
-    gain.connect(ctx.destination);
-    osc.start();
-    osc.stop(ctx.currentTime + 0.035);
-  } catch {}
-}
-
-function playWinSound() {
-  if (!soundEnabled) return;
-  try {
-    const ctx = getAudioContext();
-    if (!ctx) return;
-    const notes = [523.25, 659.25, 783.99, 1046.5]; // C5, E5, G5, C6
-    notes.forEach((freq, idx) => {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      const start = ctx.currentTime + idx * 0.09;
-      osc.type = "triangle";
-      osc.frequency.setValueAtTime(freq, start);
-      gain.gain.setValueAtTime(0, start);
-      gain.gain.linearRampToValueAtTime(0.18, start + 0.02);
-      gain.gain.exponentialRampToValueAtTime(0.001, start + 0.38);
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.start(start);
-      osc.stop(start + 0.38);
-    });
-  } catch {}
-}
 
 let confettiAnimId = null;
 function triggerConfetti(durationMs = 3500) {
@@ -507,8 +456,26 @@ function bindEvents() {
   els.drawWinners.addEventListener("click", async () => {
     try {
       els.drawWinners.disabled = true;
-      setApiStatus("Начинаю подведение итогов...");
-      await importFromVkFresh();
+      const state = collectState();
+      const hasParticipants = Array.isArray(state.participantsData) && state.participantsData.length > 0;
+
+      if (!hasParticipants && state.postUrl) {
+        setApiStatus("Импортирую участников из VK...");
+        await importFromVkFresh();
+      } else if (!hasParticipants) {
+        setApiStatus("Сначала загрузите участников или нажмите «Демо».");
+        return;
+      }
+
+      // Generate fresh Provably Fair Seed for the draw
+      currentDrawSeed = getRandomHex(16);
+      recomputeAndRender();
+      triggerConfetti(3500);
+
+      const winCount = lastResult?.winners?.length || 0;
+      const backupCount = lastResult?.backupWinners?.length || 0;
+      const backupMsg = backupCount > 0 ? ` (и ${backupCount} в резерве)` : "";
+      setApiStatus(`Итоги подведены! Выбрано победителей: ${winCount}${backupMsg}`);
       els.winnersList.scrollIntoView({ behavior: "smooth", block: "start" });
     } catch (error) {
       console.error("Draw failed", error);
@@ -553,24 +520,7 @@ function bindEvents() {
     });
   }
 
-  if (els.openRoulette) {
-    els.openRoulette.addEventListener("click", () => openRouletteModal());
-  }
-  if (els.rouletteClose) {
-    els.rouletteClose.addEventListener("click", () => closeRouletteModal());
-  }
-  if (els.rouletteSoundToggle) {
-    els.rouletteSoundToggle.addEventListener("click", () => toggleRouletteSound());
-  }
-  if (els.rouletteSpinBtn) {
-    els.rouletteSpinBtn.addEventListener("click", () => spinRoulette());
-  }
-  if (els.rouletteRecordBtn) {
-    els.rouletteRecordBtn.addEventListener("click", () => toggleRouletteRecording());
-  }
-  if (els.rouletteRevealAll) {
-    els.rouletteRevealAll.addEventListener("click", () => revealAllRoulette());
-  }
+  
 
   els.jsonFile.addEventListener("change", async () => {
     const file = els.jsonFile.files?.[0];
@@ -2921,219 +2871,3 @@ async function shareResultToVk(result) {
   if (els.shareVk) flashButton(els.shareVk, "Текст скопирован!");
 }
 
-// --- Interactive Roulette Controller ---
-let rouletteSpinIndex = 0;
-let rouletteIsSpinning = false;
-let rouletteAngle = 0;
-
-function openRouletteModal() {
-  const result = lastResult ?? recompute();
-  if (!result.winners.length) {
-    alert("Сначала подведите итоги или загрузите участников!");
-    return;
-  }
-  rouletteSpinIndex = 0;
-  els.rouletteModal.classList.remove("hidden");
-  updateRouletteButtonState(result);
-  drawRouletteWheel(result, rouletteAngle);
-}
-
-function closeRouletteModal() {
-  els.rouletteModal.classList.add("hidden");
-  if (mediaRecorder && mediaRecorder.state === "recording") {
-    mediaRecorder.stop();
-  }
-}
-
-function toggleRouletteSound() {
-  soundEnabled = !soundEnabled;
-  if (els.rouletteSoundToggle) {
-    els.rouletteSoundToggle.textContent = soundEnabled ? "🔊 Звук вкл" : "🔇 Звук выкл";
-  }
-}
-
-function updateRouletteButtonState(result) {
-  if (!els.rouletteSpinBtn) return;
-  const total = result.winners.length;
-  if (rouletteSpinIndex >= total) {
-    els.rouletteSpinBtn.textContent = "Все победители открыты! 🎉";
-    els.rouletteSpinBtn.disabled = true;
-    return;
-  }
-  els.rouletteSpinBtn.disabled = false;
-  const currentPlace = total - rouletteSpinIndex;
-  els.rouletteSpinBtn.textContent = `Крутить для места #${currentPlace}`;
-  if (els.rouletteStatus) {
-    els.rouletteStatus.textContent = `Открытие места ${currentPlace} из ${total}`;
-  }
-}
-
-function drawRouletteWheel(result, angle = 0) {
-  const canvas = els.rouletteCanvas;
-  if (!canvas) return;
-  const ctx = canvas.getContext("2d");
-  const w = canvas.width;
-  const h = canvas.height;
-  ctx.clearRect(0, 0, w, h);
-
-  const cx = w / 2;
-  const cy = h / 2;
-  const radius = Math.min(cx, cy) - 24;
-
-  const participants = result.eligible.length > 0 ? result.eligible.slice(0, 36) : [{ name: "Участник 1" }];
-  const numSlices = Math.max(8, Math.min(36, participants.length));
-  const sliceAngle = (Math.PI * 2) / numSlices;
-  const sliceColors = ["#2680eb", "#178c57", "#ffbe3b", "#ff5252", "#9c27b0", "#00bcd4", "#e91e63", "#3f51b5"];
-
-  ctx.save();
-  ctx.translate(cx, cy);
-  ctx.rotate(angle);
-
-  for (let i = 0; i < numSlices; i++) {
-    ctx.beginPath();
-    ctx.moveTo(0, 0);
-    ctx.arc(0, 0, radius, i * sliceAngle, (i + 1) * sliceAngle);
-    ctx.closePath();
-    ctx.fillStyle = sliceColors[i % sliceColors.length];
-    ctx.fill();
-    ctx.strokeStyle = "rgba(255,255,255,0.3)";
-    ctx.lineWidth = 2;
-    ctx.stroke();
-
-    ctx.save();
-    ctx.rotate(i * sliceAngle + sliceAngle / 2);
-    ctx.textAlign = "right";
-    ctx.fillStyle = "#ffffff";
-    ctx.font = "bold 13px Manrope, sans-serif";
-    const p = participants[i % participants.length];
-    const nameStr = p ? (p.name || `id${p.id}`).slice(0, 14) : `Участник ${i + 1}`;
-    ctx.fillText(nameStr, radius - 16, 5);
-    ctx.restore();
-  }
-
-  ctx.restore();
-
-  ctx.fillStyle = "#ffffff";
-  ctx.beginPath();
-  ctx.arc(cx, cy, 38, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.strokeStyle = "#2680eb";
-  ctx.lineWidth = 4;
-  ctx.stroke();
-
-  ctx.fillStyle = "#10233d";
-  ctx.font = "800 24px Manrope, sans-serif";
-  ctx.textAlign = "center";
-  ctx.fillText("🎰", cx, cy + 8);
-}
-
-function spinRoulette() {
-  const result = lastResult ?? recompute();
-  if (rouletteIsSpinning || rouletteSpinIndex >= result.winners.length) return;
-
-  rouletteIsSpinning = true;
-  if (els.rouletteSpinBtn) els.rouletteSpinBtn.disabled = true;
-
-  const total = result.winners.length;
-  const winnerIndex = total - 1 - rouletteSpinIndex;
-  const currentWinner = result.winners[winnerIndex];
-  const placeNumber = winnerIndex + 1;
-
-  const spinDuration = 3200;
-  const startAngle = rouletteAngle;
-  const extraRotations = (4 + Math.random() * 3) * Math.PI * 2;
-  const targetAngle = startAngle + extraRotations;
-  const startTime = Date.now();
-  let lastTickAngle = startAngle;
-
-  function animate() {
-    const elapsed = Date.now() - startTime;
-    const progress = Math.min(1, elapsed / spinDuration);
-    const ease = 1 - Math.pow(1 - progress, 3);
-    rouletteAngle = startAngle + (targetAngle - startAngle) * ease;
-
-    if (Math.abs(rouletteAngle - lastTickAngle) > 0.22) {
-      playTickSound();
-      lastTickAngle = rouletteAngle;
-    }
-
-    drawRouletteWheel(result, rouletteAngle);
-
-    if (progress < 1) {
-      requestAnimationFrame(animate);
-    } else {
-      rouletteIsSpinning = false;
-      rouletteSpinIndex++;
-      playWinSound();
-      triggerConfetti(3500);
-
-      if (els.rouletteRevealCard && els.revealPlaceBadge && els.revealWinnerInfo) {
-        els.rouletteRevealCard.style.display = "flex";
-        els.revealPlaceBadge.textContent = `${placeNumber} место`;
-        const prize = getPrizeForPlace(result, winnerIndex);
-        els.revealWinnerInfo.innerHTML = `
-          <strong>${escapeHtml(currentWinner.name)} (id${currentWinner.id})</strong>
-          <span>${prize ? `🎁 Приз: ${escapeHtml(prize)}` : shortUrl(currentWinner.profileUrl)}</span>
-        `;
-      }
-
-      updateRouletteButtonState(result);
-    }
-  }
-
-  requestAnimationFrame(animate);
-}
-
-function revealAllRoulette() {
-  const result = lastResult ?? recompute();
-  rouletteSpinIndex = result.winners.length;
-  updateRouletteButtonState(result);
-  playWinSound();
-  triggerConfetti(3000);
-  if (els.rouletteRevealCard && els.revealPlaceBadge && els.revealWinnerInfo) {
-    els.rouletteRevealCard.style.display = "flex";
-    els.revealPlaceBadge.textContent = "Итоги";
-    els.revealWinnerInfo.innerHTML = `<strong>Все ${result.winners.length} победителей определены!</strong><span>Смотрите подробный список в основном окне</span>`;
-  }
-}
-
-function toggleRouletteRecording() {
-  const canvas = els.rouletteCanvas;
-  if (!canvas) return;
-
-  if (isRecordingVideo) {
-    if (mediaRecorder && mediaRecorder.state === "recording") {
-      mediaRecorder.stop();
-    }
-    isRecordingVideo = false;
-    if (els.rouletteRecordBtn) els.rouletteRecordBtn.textContent = "📹 Записать видео (WebM)";
-    return;
-  }
-
-  if (typeof canvas.captureStream !== "function" || typeof MediaRecorder === "undefined") {
-    alert("Запись видео не поддерживается в этом браузере.");
-    return;
-  }
-
-  try {
-    const stream = canvas.captureStream(30);
-    recordedChunks = [];
-    mediaRecorder = new MediaRecorder(stream, { mimeType: "video/webm" });
-
-    mediaRecorder.ondataavailable = (e) => {
-      if (e.data && e.data.size > 0) recordedChunks.push(e.data);
-    };
-
-    mediaRecorder.onstop = () => {
-      const blob = new Blob(recordedChunks, { type: "video/webm" });
-      downloadBlob(blob, "vk-roulette-draw.webm");
-    };
-
-    mediaRecorder.start();
-    isRecordingVideo = true;
-    if (els.rouletteRecordBtn) els.rouletteRecordBtn.textContent = "⏹️ Остановить запись";
-  } catch (err) {
-    console.error("Recording start failed", err);
-    alert("Не удалось запустить запись видео: " + err.message);
-  }
-}

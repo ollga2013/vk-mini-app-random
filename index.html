@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Рандомайзер для конкурсов</title>
-    <link rel="stylesheet" href="./styles.css?v=20261020-pro" />
+    <link rel="stylesheet" href="./styles.css?v=20261020-clean" />
   </head>
   <body>
     <div class="bg-orb bg-orb-a"></div>
@@ -16,14 +16,13 @@
           <p class="eyebrow">Рандомайзер для конкурсов</p>
           <h1>Подведение итогов</h1>
           <p class="lead">
-            Прозрачный розыгрыш с контролем честности (SHA-256), рулеткой, фильтрами ботов и экспортными картинками для постов и историй.
+            Честный розыгрыш с защитой от ботов, контролем честности (SHA-256), билетами за активность и красивыми картинками для постов и историй.
           </p>
         </div>
         <div class="topbar-actions">
-          <button class="ghost" id="load-demo">Демо</button>
-          <button class="secondary" id="open-roulette">🎰 Рулетка</button>
-          <button class="ghost" id="copy-report">Скопировать отчет</button>
-          <button class="primary" id="draw-winners">Подвести итоги</button>
+          <button class="ghost" id="load-demo" title="Загрузить тестовых участников для проверки работы приложения">Демо</button>
+          <button class="ghost" id="copy-report" title="Скопировать готовый текстовый отчет с упоминаниями победителей в буфер обмена">Скопировать отчет</button>
+          <button class="primary" id="draw-winners" title="Случайно определить победителей среди допущенных участников с расчетом хэша честности SHA-256">Подвести итоги</button>
         </div>
       </header>
 
@@ -31,86 +30,87 @@
         <article class="panel">
           <div class="panel-head">
             <h2>Источник конкурса</h2>
-            <span class="subtle">На что идет розыгрыш</span>
+            <span class="subtle">Параметры и призы</span>
           </div>
 
-          <label class="field">
+          <label class="field" title="Вставьте ссылку на конкурсную запись ВКонтакте">
             <span>Ссылка на пост</span>
             <input
               id="post-url"
               type="url"
               placeholder="https://vk.com/wall-123456_78"
               autocomplete="off"
+              title="Ссылка на конкурсную запись VK вида https://vk.com/wall-XXXX_YYYY"
             />
             <div class="field-actions">
-              <button class="ghost small" id="restore-post-url" type="button">Последний пост</button>
-              <button class="ghost small" id="clear-post-url" type="button">Очистить</button>
+              <button class="ghost small" id="restore-post-url" type="button" title="Восстановить ранее сохранённую ссылку на пост">Последний пост</button>
+              <button class="ghost small" id="clear-post-url" type="button" title="Очистить поле ссылки на пост">Очистить</button>
             </div>
           </label>
           <span class="subtle status-line" id="vk-api-status">Готово к розыгрышу</span>
 
           <div class="choice-row" id="entry-mode">
-            <label class="chip"><input type="checkbox" value="repost" checked /> Репост</label>
-            <label class="chip"><input type="checkbox" value="comment" /> Комментарий</label>
-            <label class="chip"><input type="checkbox" value="like" /> Лайк</label>
-            <label class="chip"><input type="checkbox" value="all" /> Все вместе</label>
+            <label class="chip" title="Учитывать только тех, кто сделал репост конкурсной записи"><input type="checkbox" value="repost" checked /> Репост</label>
+            <label class="chip" title="Учитывать только тех, кто оставил комментарий под конкурсной записью"><input type="checkbox" value="comment" /> Комментарий</label>
+            <label class="chip" title="Учитывать только тех, кто поставил лайк на конкурсную запись"><input type="checkbox" value="like" /> Лайк</label>
+            <label class="chip" title="Требовать одновременное выполнение всех выбранных условий"><input type="checkbox" value="all" /> Все вместе</label>
           </div>
 
-          <div class="field" id="comment-filters-box" style="display:none;">
+          <div class="field" id="comment-filters-box" style="display:none;" title="Дополнительные условия для проверки комментариев">
             <span>Фильтр комментариев</span>
-            <input id="comment-keyword" type="text" placeholder="Ключевое слово / фраза (необязательно)" autocomplete="off" />
-            <label class="toggle compact-toggle" style="margin-top:8px;">
+            <input id="comment-keyword" type="text" placeholder="Ключевое слово / фраза (необязательно)" autocomplete="off" title="Учитывать только комментарии, содержащие эту фразу (без учёта регистра)" />
+            <label class="toggle compact-toggle" style="margin-top:8px;" title="Исключать комментарии, в которых нет отметки друга через @ или ссылку на профиль">
               <input id="comment-require-mention" type="checkbox" />
-              <span><small>Только с отметкой друга (@ или [id])</small></span>
+              <span><small>Только с отметкой друга (@ или [id|имя])</small></span>
             </label>
           </div>
 
           <div class="toggle-row">
-            <label class="toggle">
+            <label class="toggle" title="Проверять, чтобы конкурсный репост был закреплен на стене участника">
               <input id="pinned-post" type="checkbox" checked />
               <span>
                 <strong>Пост закреплен</strong>
-                <small>Отмечается в отчете и картинке результата</small>
+                <small>Проверять закрепление репоста на стене участника</small>
               </span>
             </label>
           </div>
 
           <div class="two-col">
-            <label class="field">
+            <label class="field" title="Количество основных призовых мест (каждому победителю свой приз)">
               <span>Победителей</span>
-              <input id="winners-count" type="number" min="1" max="10000" value="3" />
+              <input id="winners-count" type="number" min="1" max="10000" value="3" title="Количество основных победителей (от 1 до 10 000)" />
             </label>
-            <label class="field">
+            <label class="field" title="Количество запасных участников на случай, если победитель не выйдет на связь">
               <span>Резервных</span>
-              <input id="backup-winners-count" type="number" min="0" max="100" value="0" />
+              <input id="backup-winners-count" type="number" min="0" max="100" value="0" title="Количество резервных победителей (0 если не нужны)" />
             </label>
           </div>
 
           <div class="toggle-row">
-            <label class="toggle">
+            <label class="toggle" title="Начислять дополнительные шансы (билеты) за каждое действие">
               <input id="enable-tickets" type="checkbox" />
               <span>
                 <strong>Весовые шансы (Билеты)</strong>
-                <small>Больше действий — выше вероятность победы</small>
+                <small>Больше активности — выше шанс на победу (без повторных выигрышей)</small>
               </span>
             </label>
           </div>
-          <div class="two-col compact ticket-box" id="ticket-weights-box" style="display:none;">
-            <label class="field">
+          <div class="two-col compact ticket-box" id="ticket-weights-box" style="display:none;" title="Настройка весов (количества билетов) за каждое действие">
+            <label class="field" title="Сколько билетов (шансов) начисляется за репост записи">
               <span>Билетов за репост</span>
               <input id="weight-repost" type="number" min="1" max="100" value="3" />
             </label>
-            <label class="field">
+            <label class="field" title="Сколько билетов (шансов) начисляется за комментарий">
               <span>Билетов за коммент</span>
               <input id="weight-comment" type="number" min="1" max="100" value="2" />
             </label>
-            <label class="field" style="grid-column: span 2;">
+            <label class="field" style="grid-column: span 2;" title="Сколько билетов (шансов) начисляется за лайк">
               <span>Билетов за лайк</span>
               <input id="weight-like" type="number" min="1" max="100" value="1" />
             </label>
           </div>
 
-          <div class="field">
+          <div class="field" title="Укажите названия призов для каждого места — они попадут в отчет и на картинку">
             <span>Призы по местам</span>
             <div class="prize-list" id="prize-list"></div>
           </div>
@@ -118,61 +118,62 @@
 
         <article class="panel">
           <div class="panel-head">
-            <h2>Фильтры</h2>
-            <span class="subtle">Фильтры можно включать точечно</span>
+            <h2>Фильтры отсева</h2>
+            <span class="subtle">Защита от фейков и ботов</span>
           </div>
 
           <div class="filters" id="filters">
-            <label class="toggle">
+            <label class="toggle" title="Исключать профили со стандартной серой картинкой без загруженного фото">
               <input type="checkbox" data-filter="requireAvatar" checked />
-              <span><strong>Только с аватаром</strong><small>Без пустых профилей</small></span>
+              <span><strong>Только с аватаром</strong><small>Без пустых профилей и фейков</small></span>
             </label>
-            <label class="toggle">
+            <label class="toggle" title="Проверять наличие участника в списке подписчиков сообщества конкурса">
               <input type="checkbox" data-filter="requireGroupMember" checked />
-              <span><strong>Подписка на сообщество</strong><small>Если конкурс внутри группы</small></span>
+              <span><strong>Подписка на сообщество</strong><small>Проверка членства в группе организатора</small></span>
             </label>
-            <label class="toggle">
+            <label class="toggle" title="Исключать участников, у которых закрыты личные сообщения, чтобы организатор мог связаться">
               <input type="checkbox" data-filter="requireOpenPm" />
-              <span><strong>Открытые личные сообщения</strong><small>Исключать тех, кому закрыты сообщения</small></span>
+              <span><strong>Открытые личные сообщения</strong><small>Исключать тех, кому нельзя написать в ЛС</small></span>
             </label>
-            <label class="toggle">
+            <label class="toggle" title="Не допускать к розыгрышу сообщества и публичные страницы (только люди)">
               <input type="checkbox" data-filter="excludeCommunities" checked />
-              <span><strong>Исключать сообщества</strong><small>Только живые профили</small></span>
+              <span><strong>Исключать сообщества</strong><small>Только личные страницы пользователей</small></span>
             </label>
-            <label class="toggle">
+            <label class="toggle" title="Исключать закрытые профили, у которых невозможно проверить стену">
               <input type="checkbox" data-filter="excludePrivate" />
-              <span><strong>Не пускать закрытые профили</strong><small>Когда важна открытая проверка</small></span>
+              <span><strong>Не пускать закрытые профили</strong><small>Когда важна открытая проверка условий</small></span>
             </label>
-            <label class="toggle">
+            <label class="toggle" title="Исключать свежесозданные аккаунты для защиты от накрутки">
               <input type="checkbox" data-filter="minAgeDays" />
               <span><strong>Мин. возраст аккаунта</strong><small>Защита от свежих фейков и ботов</small></span>
             </label>
-            <div id="min-age-box" class="field compact-field" style="display:none; margin: -2px 0 6px;">
+            <div id="min-age-box" class="field compact-field" style="display:none; margin: -2px 0 6px;" title="Минимальный возраст профиля в днях">
               <span>Минимум дней с регистрации</span>
               <input id="min-age-days" type="number" min="1" max="5000" value="30" />
             </div>
-            <label class="toggle">
+            <label class="toggle" title="Анализировать записи на стене участника и исключать тех, кто участвует во всех подряд конкурсах">
               <input type="checkbox" data-filter="strictPrizeHunter" />
-              <span><strong>Строгая проверка призоловов</strong><small>Медленнее: сканирует стены участников</small></span>
+              <span><strong>Строгая проверка призоловов</strong><small>Сканирует стены участников на обилие конкурсов</small></span>
             </label>
           </div>
 
-          <label class="field">
+          <label class="field" title="Максимально допустимое количество конкурсов среди последних записей на стене участника">
             <span>Макс. конкурсов на стене</span>
             <input id="max-contests" type="number" min="0" value="3" />
-            <div class="subtle">Применяется только при строгой проверке.</div>
+            <div class="subtle">Применяется только при строгой проверке призоловов.</div>
           </label>
 
-          <div class="field">
+          <div class="field" title="Профили из этого списка ни при каких условиях не попадут в число победителей">
             <div class="field-head-inline">
               <span>Прошлые победители / Стоп-лист</span>
-              <button class="ghost small" id="clear-excluded" type="button">Очистить</button>
+              <button class="ghost small" id="clear-excluded" type="button" title="Очистить стоп-лист">Очистить</button>
             </div>
             <textarea
               id="excluded-winners"
               rows="3"
               spellcheck="false"
               placeholder="https://vk.com/id123&#10;https://vk.com/some_name&#10;Каждый с новой строки"
+              title="Вставьте ссылки на страницы или ID пользователей по одному на строку"
             ></textarea>
             <div class="subtle">Ссылки или ID для исключения из розыгрыша (сохраняются автоматически).</div>
           </div>
@@ -181,23 +182,23 @@
         <article class="panel panel-wide import-panel">
           <div class="panel-head">
             <h2>Живой импорт из VK</h2>
-            <span class="subtle">Проверяю сервер...</span>
+            <span class="subtle">Сбор данных</span>
           </div>
 
           <div class="import-grid">
             <div class="import-copy">
-              <p>Сбор участников через локальный proxy или VK Bridge. Токены живут на сервере или в защищённом контексте VK.</p>
-              <p class="muted">Импорт подтянет репосты, комментарии, лайки и профильные поля для честной жеребьёвки.</p>
+              <p>Автоматический сбор участников по ссылке на запись через VK API или VK Bridge.</p>
+              <p class="muted">Импортирует репосты, комментарии, лайки и профили для честной жеребьёвки.</p>
             </div>
 
             <div class="two-col compact import-controls">
-              <label class="field">
+              <label class="field" title="Сколько последних записей на стене каждого участника проверять на конкурсы и спам">
                 <span>Скан стены, постов</span>
                 <input id="import-scan-depth" type="number" min="10" max="200" value="60" />
               </label>
               <div class="import-buttons">
-                <button class="ghost" id="check-import">Проверить сервер</button>
-                <button class="primary" id="import-vk">Импортировать из VK</button>
+                <button class="ghost" id="check-import" title="Проверить статус подключения к серверу API">Проверить сервер</button>
+                <button class="primary" id="import-vk" title="Запустить сбор всех участников конкурса из ВКонтакте">Импортировать из VK</button>
               </div>
             </div>
           </div>
@@ -206,21 +207,21 @@
         <article class="panel panel-wide manual-panel">
           <div class="panel-head">
             <h2>Участники</h2>
-            <span class="subtle">Пастите JSON или список строк</span>
+            <span class="subtle">Ручной ввод</span>
           </div>
 
-          <label class="field">
+          <label class="field" title="Сюда можно вставить список ID, ссылок на профили или JSON-массив">
             <span>
-              Формат: массив объектов JSON.
-              <span class="muted">Можно вставить и просто `id`, если нет расширенных полей.</span>
+              Формат: массив объектов JSON или список ссылок / ID.
+              <span class="muted">Можно вставить и просто `id` построчно.</span>
             </span>
             <textarea id="participants" rows="8" spellcheck="false" placeholder='[{"id":123,"name":"Анна","avatarUrl":"https://...","actions":{"repost":true,"comment":true,"like":true},"member":true,"friends":128,"ageDays":780,"wallContestCount":1,"repostShare":0.12,"isCommunity":false,"isPrivate":false}]'></textarea>
           </label>
 
           <div class="mini-actions">
-            <button class="ghost" id="use-sample">Вставить пример</button>
-            <button class="ghost" id="clear-participants">Очистить</button>
-            <label class="file-button">
+            <button class="ghost" id="use-sample" title="Вставить тестовый список участников в текстовом формате">Вставить пример</button>
+            <button class="ghost" id="clear-participants" title="Полностью очистить список участников">Очистить</button>
+            <label class="file-button" title="Загрузить готовый файл со списком участников (.json)">
               <input id="json-file" type="file" accept="application/json,.json" />
               <span>Загрузить JSON</span>
             </label>
@@ -230,46 +231,46 @@
         <article class="panel transparency-panel">
           <div class="panel-head">
             <h2>Прозрачность</h2>
-            <span class="subtle">Что увидят участники</span>
+            <span class="subtle">Контроль и экспорт</span>
           </div>
 
-          <div class="stats">
-            <div>
+          <div class="stats" title="Сводная статистика участников розыгрыша">
+            <div title="Всего уникальных участников, найденных по условиям">
               <strong id="participants-count">0</strong>
               <span>участников</span>
             </div>
-            <div>
+            <div title="Участники, успешно прошедшие все фильтры">
               <strong id="eligible-count">0</strong>
               <span>допущено</span>
             </div>
-            <div>
+            <div title="Участники, отсеянные фильтрами (боты, закрытые профили, призоловы)">
               <strong id="excluded-count">0</strong>
               <span>исключено</span>
             </div>
           </div>
 
-          <div class="audit" id="audit-log"></div>
+          <div class="audit" id="audit-log" title="Причины исключения участников фильтрами"></div>
 
-          <div class="integrity-badge" id="integrity-block">
+          <div class="integrity-badge" id="integrity-block" title="Контроль честности (Provably Fair) на базе криптографического хэша SHA-256">
             <div class="integrity-head">
               <span class="integrity-icon">🛡️</span>
               <div>
                 <strong>Контроль честности (SHA-256)</strong>
-                <span class="subtle integrity-hash" id="integrity-hash-preview">Хэш будет сформирован при розыгрыше</span>
+                <span class="subtle integrity-hash" id="integrity-hash-preview" title="Контрольная сумма сформированного розыгрыша">Хэш формируется при розыгрыше</span>
               </div>
             </div>
-            <button class="ghost small" id="copy-hash-btn" type="button">Скопировать хэш</button>
+            <button class="ghost small" id="copy-hash-btn" type="button" title="Скопировать SHA-256 хэш розыгрыша в буфер обмена">Скопировать хэш</button>
           </div>
 
-          <div class="report-box" id="report-preview">
+          <div class="report-box" id="report-preview" title="Предпросмотр текстового отчета для публикации в посте группы">
             Подготовьте список и нажмите «Подвести итоги».
           </div>
 
           <div class="mini-actions">
-            <button class="ghost" id="download-report">Скачать текст</button>
-            <button class="primary" id="download-image" data-action="download-image" title="Картинка 16:9 для поста">Картинка (Пост)</button>
-            <button class="ghost" id="download-story" title="Вертикальная картинка 9:16">В историю (9:16)</button>
-            <button class="ghost" id="share-vk" title="Опубликовать пост с итогами в VK">Пост в VK</button>
+            <button class="ghost" id="download-report" title="Скачать готовый текст итогов в виде текстового файла .txt">Скачать текст</button>
+            <button class="primary" id="download-image" data-action="download-image" title="Сгенерировать и скачать картинку 16:9 с победителями и призами для публикации в посте">Картинка (Пост)</button>
+            <button class="ghost" id="download-story" title="Сгенерировать и скачать вертикальную картинку 1080x1920 для публикации в историях сообщества">В историю (9:16)</button>
+            <button class="ghost" id="share-vk" title="Открыть форму публикации записи ВКонтакте с уже заполненным текстом итогов">Пост в VK</button>
           </div>
         </article>
 
@@ -280,7 +281,7 @@
           </div>
 
           <div class="winners" id="winners-list">
-            <div class="empty-state">Пока пусто.</div>
+            <div class="empty-state">Пока пусто. Нажмите «Подвести итоги».</div>
           </div>
 
           <div id="backup-winners-section" style="display:none; margin-top: 24px;">
@@ -294,38 +295,6 @@
       </section>
     </main>
 
-    <!-- Модальное окно интерактивной рулетки -->
-    <div class="roulette-backdrop hidden" id="roulette-modal">
-      <div class="roulette-dialog">
-        <div class="roulette-header">
-          <div>
-            <h2>🎰 Интерактивный розыгрыш</h2>
-            <p class="subtle" id="roulette-status">Колесо фортуны и поэтапное вскрытие</p>
-          </div>
-          <div class="roulette-header-actions">
-            <button class="ghost small" id="roulette-sound-toggle" type="button">🔊 Звук вкл</button>
-            <button class="ghost small" id="roulette-close" type="button">✕</button>
-          </div>
-        </div>
-
-        <div class="roulette-canvas-wrap">
-          <canvas id="roulette-canvas" width="640" height="420"></canvas>
-          <div class="roulette-pointer"></div>
-        </div>
-
-        <div class="roulette-reveal-card" id="roulette-reveal-card" style="display:none;">
-          <div class="reveal-badge" id="reveal-place-badge">1 место</div>
-          <div class="reveal-winner-info" id="reveal-winner-info"></div>
-        </div>
-
-        <div class="roulette-actions">
-          <button class="primary" id="roulette-spin-btn" type="button">Крутить колесо</button>
-          <button class="ghost" id="roulette-record-btn" type="button">📹 Записать видео (WebM)</button>
-          <button class="ghost" id="roulette-reveal-all" type="button">Показать всех</button>
-        </div>
-      </div>
-    </div>
-
     <canvas id="export-canvas" class="hidden"></canvas>
     <canvas id="story-canvas" class="hidden"></canvas>
     <canvas id="confetti-canvas" class="confetti-layer pointer-events-none"></canvas>
@@ -334,6 +303,6 @@
       window.VK_WINNER_API_BASE_URL = "";
     </script>
     <script src="https://unpkg.com/@vkontakte/vk-bridge/dist/browser.min.js"></script>
-    <script type="module" src="./app.js?v=20261020-pro"></script>
+    <script type="module" src="./app.js?v=20261020-clean"></script>
   </body>
 </html>
