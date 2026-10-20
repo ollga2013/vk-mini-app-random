@@ -18,21 +18,23 @@ const logger = winston.createLogger({
   transports: [new winston.transports.Console()],
 });
 
+const ROOT_DIR = __dirname;
+loadEnvFile(path.join(ROOT_DIR, ".env.local"));
+loadEnvFile(path.join(ROOT_DIR, ".env"));
+
 // Validate essential environment variables
 function validateEnv() {
-  const required = ["VK_APP_SECRET", "VK_USER_TOKEN", "PORT"];
-  const missing = required.filter((key) => !process.env[key] || !process.env[key].trim());
+  const missing = [];
+  if (!process.env.VK_APP_SECRET) missing.push("VK_APP_SECRET");
+  if (!process.env.VK_USER_TOKEN && !process.env.VK_TOKEN && !process.env.VK_SERVICE_TOKEN) {
+    missing.push("VK_USER_TOKEN (or VK_SERVICE_TOKEN)");
+  }
   if (missing.length) {
-    logger.error(`Missing required env vars: ${missing.join(", ")}`);
-    process.exit(1);
+    logger.warn(`Optional env vars not set: ${missing.join(", ")}. Launch check or API calls may be limited.`);
   }
 }
 
 validateEnv();
-
-const ROOT_DIR = __dirname;
-loadEnvFile(path.join(ROOT_DIR, ".env.local"));
-loadEnvFile(path.join(ROOT_DIR, ".env"));
 
 const PORT = Number(process.env.PORT || 4173);
 const API_VERSION = process.env.VK_API_VERSION || "5.199";
@@ -172,24 +174,46 @@ async function handleRequest(req, res) {
     }
 
     if (pathname === "/api/image" && req.method === "GET") {
-      const remoteUrl = String(requestUrl.searchParams.get("url") || "").trim();
+      let remoteUrl = String(requestUrl.searchParams.get("url") || "").trim();
+      while (remoteUrl.includes("url=")) {
+        const match = remoteUrl.match(/[?&]url=([^&]+)/);
+        if (match && match[1]) {
+          const decoded = decodeURIComponent(match[1]);
+          if (/^https?:\/\//i.test(decoded)) {
+            remoteUrl = decoded;
+            continue;
+          }
+        }
+        break;
+      }
       if (!isSafeRemoteUrl(remoteUrl)) {
         sendJson(res, 400, { error: "invalid_image_url" });
         return;
       }
-      const response = await fetch(remoteUrl);
-      if (!response.ok) {
-        sendJson(res, response.status, { error: "image_fetch_failed" });
+      try {
+        const response = await fetch(remoteUrl, {
+          headers: {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+          },
+          signal: AbortSignal.timeout(10000),
+        });
+        if (!response.ok) {
+          sendJson(res, response.status, { error: "image_fetch_failed" });
+          return;
+        }
+        const buffer = Buffer.from(await response.arrayBuffer());
+        res.writeHead(200, {
+          "content-type": response.headers.get("content-type") || "image/jpeg",
+          "cache-control": "public, max-age=86400",
+          "access-control-allow-origin": "*",
+        });
+        res.end(buffer);
+        return;
+      } catch (err) {
+        sendJson(res, 502, { error: "image_fetch_failed", message: String(err && err.message ? err.message : err) });
         return;
       }
-      const buffer = Buffer.from(await response.arrayBuffer());
-      res.writeHead(200, {
-        "content-type": response.headers.get("content-type") || "image/jpeg",
-        "cache-control": "public, max-age=3600",
-        "access-control-allow-origin": "*",
-      });
-      res.end(buffer);
-      return;
     }
 
     sendJson(res, 404, { error: "not_found" });
@@ -330,7 +354,7 @@ async function buildParticipants({ postUrl, ownerId, postId, selectedModes, sour
   const participants = users.map((user) => {
     const actionFlags = sourceMaps.get(user.id) || { repost: false, comment: false, like: false };
     const wallSignals = wallMap.get(user.id) || {};
-    const photoUrl = user.avatarUrl ? `/api/image?url=${encodeURIComponent(user.avatarUrl)}` : "";
+    const photoUrl = user.avatarUrl || "";
     return {
       id: user.id,
       name: user.name,
@@ -344,6 +368,8 @@ async function buildParticipants({ postUrl, ownerId, postId, selectedModes, sour
       repostShare: wallSignals.repostShare ?? null,
       isCommunity: false,
       isPrivate: wallSignals.isPrivate ?? false,
+      canWritePm: user.canWritePm ?? null,
+      commentText: actionFlags.commentText || "",
       hasPinnedTargetPost: wallSignals.hasPinnedTargetPost ?? null,
       bioText: user.bioText || "",
       wallText: wallSignals.wallText || "",
@@ -403,6 +429,7 @@ async function collectSourceMaps(ownerId, postId, selectedModes) {
       data.ids.forEach((id) => {
         const entry = ensureAction(map, id);
         entry.comment = true;
+        if (data.commentTexts && data.commentTexts[id]) entry.commentText = data.commentTexts[id];
       });
     });
   }
@@ -505,6 +532,7 @@ async function fetchLikers(ownerId, postId) {
 
 async function fetchCommenters(ownerId, postId) {
   const results = [];
+  const commentTexts = {};
   let offset = 0;
   const count = 100;
   let total = null;
@@ -518,16 +546,17 @@ async function fetchCommenters(ownerId, postId) {
     });
     if (Number.isFinite(data.count)) total = data.count;
     const items = data.items || [];
-    results.push(
-      ...items
-        .map((comment) => comment.from_id)
-        .filter((id) => Number.isInteger(id) && id > 0),
-    );
+    items.forEach((c) => {
+      if (Number.isInteger(c.from_id) && c.from_id > 0) {
+        results.push(c.from_id);
+        if (c.text && !commentTexts[c.from_id]) commentTexts[c.from_id] = String(c.text);
+      }
+    });
     if (items.length < count || (Number.isFinite(data.count) && offset + items.length >= data.count)) break;
     offset += count;
   }
   const ids = uniqPositive(results).slice(0, MAX_IMPORT_ITEMS);
-  return { ids, total: Math.max(ids.length, total || 0) };
+  return { ids, total: Math.max(ids.length, total || 0), commentTexts };
 }
 
 function extractRepostOwnerIds(response) {
@@ -562,6 +591,7 @@ async function getUsers(ids) {
           "about",
           "status",
           "can_see_all_posts",
+          "can_write_private_message",
           "is_closed",
         ].join(","),
       });
@@ -573,6 +603,7 @@ async function getUsers(ids) {
           profileUrl: `https://vk.com/${u.domain || `id${u.id}`}`,
           avatarUrl: u.photo_200 || u.photo_100 || u.photo_50 || "",
           friends: u.counters && Number.isFinite(u.counters.friends) ? u.counters.friends : null,
+          canWritePm: u.can_write_private_message === 1,
           bioText: [u.about, u.status].filter(Boolean).join(" ").trim(),
         });
       });

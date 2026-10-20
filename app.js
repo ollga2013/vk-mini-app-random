@@ -49,12 +49,45 @@ const els = {
   copyReport: $("#copy-report"),
   drawWinners: $("#draw-winners"),
   downloadReport: $("#download-report"),
-  downloadImages: $$("#download-image, [data-action='download-image']"),
+  downloadImages: $("#download-image, [data-action='download-image']"),
   useSample: $("#use-sample"),
   clearParticipants: $("#clear-participants"),
   jsonFile: $("#json-file"),
   canvas: $("#export-canvas"),
   excludedWinners: $("#excluded-winners"),
+  backupWinnersCount: $("#backup-winners-count"),
+  enableTickets: $("#enable-tickets"),
+  ticketWeightsBox: $("#ticket-weights-box"),
+  weightRepost: $("#weight-repost"),
+  weightComment: $("#weight-comment"),
+  weightLike: $("#weight-like"),
+  commentFiltersBox: $("#comment-filters-box"),
+  commentKeyword: $("#comment-keyword"),
+  commentRequireMention: $("#comment-require-mention"),
+  minAgeBox: $("#min-age-box"),
+  minAgeDays: $("#min-age-days"),
+  clearExcluded: $("#clear-excluded"),
+  integrityBlock: $("#integrity-block"),
+  integrityHashPreview: $("#integrity-hash-preview"),
+  copyHashBtn: $("#copy-hash-btn"),
+  downloadStory: $("#download-story"),
+  shareVk: $("#share-vk"),
+  storyCanvas: $("#story-canvas"),
+  backupWinnersSection: $("#backup-winners-section"),
+  backupWinnersList: $("#backup-winners-list"),
+  openRoulette: $("#open-roulette"),
+  rouletteModal: $("#roulette-modal"),
+  rouletteClose: $("#roulette-close"),
+  rouletteCanvas: $("#roulette-canvas"),
+  rouletteStatus: $("#roulette-status"),
+  rouletteSpinBtn: $("#roulette-spin-btn"),
+  rouletteSoundToggle: $("#roulette-sound-toggle"),
+  rouletteRecordBtn: $("#roulette-record-btn"),
+  rouletteRevealAll: $("#roulette-reveal-all"),
+  rouletteRevealCard: $("#roulette-reveal-card"),
+  revealPlaceBadge: $("#reveal-place-badge"),
+  revealWinnerInfo: $("#reveal-winner-info"),
+  confettiCanvas: $("#confetti-canvas"),
 };
 
 const actionLabels = {
@@ -143,6 +176,177 @@ const sampleParticipants = [
 
 const sampleTextParticipants = sampleParticipants.map(({ avatarUrl, ...rest }) => rest);
 
+
+// --- Cryptography, Audio & Visual Effects ---
+let currentDrawSeed = getRandomHex(16);
+let soundEnabled = true;
+let audioCtx = null;
+let mediaRecorder = null;
+let recordedChunks = [];
+let isRecordingVideo = false;
+
+function sha256Sync(str) {
+  const ascii = unescape(encodeURIComponent(str));
+  function rightRotate(value, amount) { return (value >>> amount) | (value << (32 - amount)); }
+  const mathPow = Math.pow; const maxWord = mathPow(2, 32);
+  let lengthProperty = 'length'; let i, j; let result = ''; const words = [];
+  const asciiBitLength = ascii[lengthProperty] * 8; let hash = []; const k = [];
+  let primeCounter = 0; const isComposite = {};
+  for (let candidate = 2; primeCounter < 64; candidate++) {
+    if (!isComposite[candidate]) {
+      for (i = 0; i < 313; i += candidate) isComposite[i] = candidate;
+      hash[primeCounter] = (mathPow(candidate, 0.5) * maxWord) | 0;
+      k[primeCounter++] = (mathPow(candidate, 1 / 3) * maxWord) | 0;
+    }
+  }
+  hash = hash.slice(0, 8); let a = ascii + '\x80';
+  while ((a[lengthProperty] % 64) - 56) a += '\x00';
+  for (i = 0; i < a[lengthProperty]; i++) {
+    j = a.charCodeAt(i);
+    words[i >> 2] |= j << ((3 - (i % 4)) * 8);
+  }
+  words[words[lengthProperty]] = (asciiBitLength / maxWord) | 0;
+  words[words[lengthProperty]] = asciiBitLength;
+  for (j = 0; j < words[lengthProperty]; ) {
+    const w = words.slice(j, (j += 16)); const oldHash = hash; hash = hash.slice(0, 8);
+    for (i = 0; i < 64; i++) {
+      const w15 = w[i - 15], w2 = w[i - 2];
+      const s0 = rightRotate(w15, 7) ^ rightRotate(w15, 18) ^ (w15 >>> 3);
+      const s1 = rightRotate(w2, 17) ^ rightRotate(w2, 19) ^ (w2 >>> 10);
+      const ch = (hash[4] & hash[5]) ^ (~hash[4] & hash[6]);
+      const maj = (hash[0] & hash[1]) ^ (hash[0] & hash[2]) ^ (hash[1] & hash[2]);
+      const temp1 = hash[7] + (rightRotate(hash[4], 6) ^ rightRotate(hash[4], 11) ^ rightRotate(hash[4], 25)) + ch + k[i] + (w[i] = (i < 16) ? w[i] : (w[i - 16] + s0 + w[i - 7] + s1) | 0);
+      const temp2 = (rightRotate(hash[0], 2) ^ rightRotate(hash[0], 13) ^ rightRotate(hash[0], 22)) + maj;
+      hash = [(temp1 + temp2) | 0].concat(hash);
+      hash[4] = (hash[4] + temp1) | 0;
+    }
+    for (i = 0; i < 8; i++) hash[i] = (hash[i] + oldHash[i]) | 0;
+  }
+  for (i = 0; i < 8; i++) {
+    for (j = 3; j + 1; j--) {
+      const b = (hash[i] >> (j * 8)) & 255;
+      result += (b < 16 ? 0 : '') + b.toString(16);
+    }
+  }
+  return result;
+}
+
+function getRandomHex(len = 16) {
+  if (window.crypto && window.crypto.getRandomValues) {
+    const arr = new Uint8Array(len);
+    window.crypto.getRandomValues(arr);
+    return Array.from(arr).map((b) => b.toString(16).padStart(2, "0")).join("");
+  }
+  return Math.random().toString(16).slice(2) + Math.random().toString(16).slice(2);
+}
+
+function getAudioContext() {
+  if (!audioCtx && typeof window.AudioContext !== "undefined") {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  }
+  if (audioCtx && audioCtx.state === "suspended") {
+    audioCtx.resume().catch(() => {});
+  }
+  return audioCtx;
+}
+
+function playTickSound() {
+  if (!soundEnabled) return;
+  try {
+    const ctx = getAudioContext();
+    if (!ctx) return;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(520, ctx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(160, ctx.currentTime + 0.035);
+    gain.gain.setValueAtTime(0.09, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.035);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime + 0.035);
+  } catch {}
+}
+
+function playWinSound() {
+  if (!soundEnabled) return;
+  try {
+    const ctx = getAudioContext();
+    if (!ctx) return;
+    const notes = [523.25, 659.25, 783.99, 1046.5]; // C5, E5, G5, C6
+    notes.forEach((freq, idx) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      const start = ctx.currentTime + idx * 0.09;
+      osc.type = "triangle";
+      osc.frequency.setValueAtTime(freq, start);
+      gain.gain.setValueAtTime(0, start);
+      gain.gain.linearRampToValueAtTime(0.18, start + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.001, start + 0.38);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(start);
+      osc.stop(start + 0.38);
+    });
+  } catch {}
+}
+
+let confettiAnimId = null;
+function triggerConfetti(durationMs = 3500) {
+  const canvas = els.confettiCanvas;
+  if (!canvas) return;
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+  const ctx = canvas.getContext("2d");
+  const colors = ["#2680eb", "#178c57", "#ffbe3b", "#ff4141", "#9c27b0", "#00bcd4"];
+  const pieces = [];
+  for (let i = 0; i < 110; i++) {
+    pieces.push({
+      x: window.innerWidth * (0.2 + Math.random() * 0.6),
+      y: window.innerHeight * 0.45,
+      vx: (Math.random() - 0.5) * 16,
+      vy: (Math.random() - 0.8) * 18,
+      size: Math.random() * 8 + 5,
+      color: colors[Math.floor(Math.random() * colors.length)],
+      rotation: Math.random() * 360,
+      rotSpeed: (Math.random() - 0.5) * 12,
+      opacity: 1,
+    });
+  }
+
+  const startTime = Date.now();
+  if (confettiAnimId) cancelAnimationFrame(confettiAnimId);
+
+  function loop() {
+    const elapsed = Date.now() - startTime;
+    if (elapsed > durationMs) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      return;
+    }
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    for (const p of pieces) {
+      p.x += p.vx;
+      p.y += p.vy;
+      p.vy += 0.35;
+      p.vx *= 0.98;
+      p.rotation += p.rotSpeed;
+      if (elapsed > durationMs - 1000) {
+        p.opacity = Math.max(0, (durationMs - elapsed) / 1000);
+      }
+      ctx.save();
+      ctx.translate(p.x, p.y);
+      ctx.rotate((p.rotation * Math.PI) / 180);
+      ctx.fillStyle = p.color;
+      ctx.globalAlpha = p.opacity;
+      ctx.fillRect(-p.size / 2, -p.size / 2, p.size, p.size * 0.6);
+      ctx.restore();
+    }
+    confettiAnimId = requestAnimationFrame(loop);
+  }
+  confettiAnimId = requestAnimationFrame(loop);
+}
+
 let demoMode = false;
 let demoParticipants = [];
 let importedParticipants = null;
@@ -173,17 +377,57 @@ function initBridge() {
   bridge.send("VKWebAppSetViewSettings", { status_bar_style: "light", action_bar_color: "#f5f8fc" }).catch(() => {});
 }
 
+function syncCommentFilterVisibility() {
+  if (!els.commentFiltersBox) return;
+  const commentChecked = Boolean(els.modeBox.querySelector('input[value="comment"]:checked, input[value="all"]:checked'));
+  els.commentFiltersBox.style.display = commentChecked ? "block" : "none";
+}
+
+function syncMinAgeVisibility() {
+  if (!els.minAgeBox) return;
+  const minAgeChecked = Boolean(els.filters.querySelector('[data-filter="minAgeDays"]:checked'));
+  els.minAgeBox.style.display = minAgeChecked ? "block" : "none";
+}
+
 function bindEvents() {
-  els.modeBox.addEventListener("change", handleModeChange);
-  els.filters.addEventListener("change", persistAndRefresh);
+  els.modeBox.addEventListener("change", (e) => {
+    handleModeChange(e);
+    syncCommentFilterVisibility();
+  });
+  els.filters.addEventListener("change", () => {
+    syncMinAgeVisibility();
+    persistAndRefresh();
+  });
+
+  if (els.enableTickets) {
+    els.enableTickets.addEventListener("change", () => {
+      els.ticketWeightsBox.style.display = els.enableTickets.checked ? "grid" : "none";
+      persistAndRefresh();
+    });
+  }
 
   [
     els.pinnedPost,
     els.maxContests,
-  ].forEach((node) => node.addEventListener("input", persistAndRefresh));
+    els.backupWinnersCount,
+    els.weightRepost,
+    els.weightComment,
+    els.weightLike,
+    els.commentKeyword,
+    els.commentRequireMention,
+    els.minAgeDays,
+  ].filter(Boolean).forEach((node) => node.addEventListener("input", persistAndRefresh));
+
   if (els.excludedWinners) {
     els.excludedWinners.addEventListener("input", persistAndRefresh);
   }
+  if (els.clearExcluded) {
+    els.clearExcluded.addEventListener("click", () => {
+      if (els.excludedWinners) els.excludedWinners.value = "";
+      persistAndRefresh();
+    });
+  }
+
   const syncPrizesAndRefresh = () => {
     renderPrizeInputs();
     persistAndRefresh();
@@ -285,6 +529,48 @@ function bindEvents() {
       await downloadResultImage(result);
     });
   });
+
+  if (els.downloadStory) {
+    els.downloadStory.addEventListener("click", async () => {
+      const result = lastResult ?? recompute();
+      await downloadStoryImage(result);
+    });
+  }
+
+  if (els.shareVk) {
+    els.shareVk.addEventListener("click", async () => {
+      const result = lastResult ?? recompute();
+      await shareResultToVk(result);
+    });
+  }
+
+  if (els.copyHashBtn) {
+    els.copyHashBtn.addEventListener("click", async () => {
+      if (lastResult?.integrityHash) {
+        await navigator.clipboard.writeText(lastResult.integrityHash);
+        flashButton(els.copyHashBtn, "Скопирован!");
+      }
+    });
+  }
+
+  if (els.openRoulette) {
+    els.openRoulette.addEventListener("click", () => openRouletteModal());
+  }
+  if (els.rouletteClose) {
+    els.rouletteClose.addEventListener("click", () => closeRouletteModal());
+  }
+  if (els.rouletteSoundToggle) {
+    els.rouletteSoundToggle.addEventListener("click", () => toggleRouletteSound());
+  }
+  if (els.rouletteSpinBtn) {
+    els.rouletteSpinBtn.addEventListener("click", () => spinRoulette());
+  }
+  if (els.rouletteRecordBtn) {
+    els.rouletteRecordBtn.addEventListener("click", () => toggleRouletteRecording());
+  }
+  if (els.rouletteRevealAll) {
+    els.rouletteRevealAll.addEventListener("click", () => revealAllRoulette());
+  }
 
   els.jsonFile.addEventListener("change", async () => {
     const file = els.jsonFile.files?.[0];
@@ -416,20 +702,6 @@ async function requestVkUserToken() {
       throw new Error("VK не выдал доступ wall. Разреши доступ к стене, чтобы проверить репосты.");
     }
     return String(authPayload?.access_token || "");
-
-    const scopeCheck = await bridge.send("VKWebAppCheckAllowedScopes", {
-      scopes: VK_IMPORT_SCOPE,
-    });
-    const allowed = new Set((scopeCheck?.result || []).filter((item) => item.allowed).map((item) => item.scope));
-    if (!allowed.has("wall")) {
-      throw new Error("VK не дал доступ wall. Без него нельзя проверить репосты.");
-    }
-
-    const payload = await bridge.send("VKWebAppGetAuthToken", {
-      app_id: getVkAppId(),
-      scope: ["wall", allowed.has("groups") ? "groups" : ""].filter(Boolean).join(","),
-    });
-    return String(payload?.access_token || "");
   } catch (error) {
     if (!canUseBackendApi()) {
       throw error;
@@ -628,6 +900,14 @@ async function importFromVkBridge(state, userToken) {
       );
       sourceCounts.comment = Math.max(data.total, officialCounts.comment);
       data.ids.forEach((id) => ensureActionRow(actionMap, id).comment = true);
+      if (Array.isArray(data.items)) {
+        data.items.forEach((c) => {
+          if (c.from_id && c.text) {
+            const r = ensureActionRow(actionMap, c.from_id);
+            if (!r.commentText) r.commentText = String(c.text);
+          }
+        });
+      }
     });
   }
 
@@ -674,7 +954,11 @@ function apiUrl(path) {
 function canUseBackendApi() {
   if (getApiBaseUrl()) return true;
   if (window.location.protocol === "file:") return false;
-  return !window.location.hostname.endsWith("github.io");
+  const host = window.location.hostname.toLowerCase();
+  if (host.endsWith("github.io") || host.includes("vk-apps.com") || host.includes("userapi.com")) {
+    return false;
+  }
+  return true;
 }
 
 function shouldUseServerImport() {
@@ -686,11 +970,10 @@ function getLaunchParamsString() {
 }
 
 function rewriteApiImageUrls(payload) {
-  const apiBaseUrl = getApiBaseUrl();
-  if (!apiBaseUrl || !Array.isArray(payload?.participants)) return;
+  if (!Array.isArray(payload?.participants)) return;
   payload.participants.forEach((participant) => {
-    if (participant.avatarUrl?.startsWith("/api/")) {
-      participant.avatarUrl = `${apiBaseUrl}${participant.avatarUrl}`;
+    if (participant.avatarUrl) {
+      participant.avatarUrl = extractCleanImageUrl(participant.avatarUrl);
     }
   });
 }
@@ -741,6 +1024,8 @@ async function buildBridgeImportPayload({ state, parsed, actionMap, selectedMode
       repostShare: wallSignals.repostShare ?? null,
       isCommunity: false,
       isPrivate: wallSignals.isPrivate ?? user.isPrivate ?? false,
+      canWritePm: user.canWritePm ?? null,
+      commentText: actionMap.get(user.id)?.commentText || "",
       hasPinnedTargetPost: wallSignals.hasPinnedTargetPost ?? null,
       bioText: user.bioText || "",
       wallText: wallSignals.wallText || "",
@@ -827,6 +1112,8 @@ async function getBridgeUsers(ids, userToken) {
           "photo_50",
           "photo_100",
           "photo_200",
+          "has_photo",
+          "can_write_private_message",
           "about",
           "status",
           "is_closed",
@@ -840,6 +1127,8 @@ async function getBridgeUsers(ids, userToken) {
           profileUrl: `https://vk.com/${user.domain || `id${user.id}`}`,
           avatarUrl: user.photo_200 || user.photo_100 || user.photo_50 || "",
           friends: user.counters && Number.isFinite(user.counters.friends) ? user.counters.friends : null,
+          canWritePm: user.can_write_private_message === 1,
+          hasPhoto: user.has_photo === 1,
           isPrivate: Boolean(user.is_closed),
           bioText: [user.about, user.status].filter(Boolean).join(" ").trim(),
         });
@@ -1129,7 +1418,7 @@ async function paginateVkBridgeIdsDetailed(fetchPage, pageSize = 100, maxItems =
     if (page.length < count || (Number.isFinite(total) && offset >= total)) break;
   }
   const ids = Array.from(new Set(results.filter((id) => Number.isInteger(id) && id > 0))).slice(0, maxItems);
-  return { ids, total: Math.max(ids.length, total || 0) };
+  return { ids, total: Math.max(ids.length, total || 0), items: results };
 }
 
 function extractVkIdsFromPage(page) {
@@ -1167,12 +1456,26 @@ function hydrateState() {
   els.postUrl.value = "";
   els.pinnedPost.checked = lastState.pinnedPost ?? true;
   els.winnersCount.value = String(lastState.winnersCount ?? 3);
+  if (els.backupWinnersCount) els.backupWinnersCount.value = String(lastState.backupWinnersCount ?? 0);
+  if (els.enableTickets) {
+    els.enableTickets.checked = Boolean(lastState.enableTickets);
+    if (els.ticketWeightsBox) els.ticketWeightsBox.style.display = els.enableTickets.checked ? "grid" : "none";
+  }
+  if (els.weightRepost) els.weightRepost.value = String(lastState.weightRepost ?? 3);
+  if (els.weightComment) els.weightComment.value = String(lastState.weightComment ?? 2);
+  if (els.weightLike) els.weightLike.value = String(lastState.weightLike ?? 1);
+  if (els.commentKeyword) els.commentKeyword.value = lastState.commentKeyword ?? "";
+  if (els.commentRequireMention) els.commentRequireMention.checked = Boolean(lastState.commentRequireMention);
+  if (els.minAgeDays) els.minAgeDays.value = String(lastState.minAgeDays ?? 30);
+
   renderPrizeInputs(normalizePrizeList(lastState.prizes, lastState.prizeText));
   els.importScanDepth.value = String(lastState.importScanDepth ?? 60);
   els.maxContests.value = String(lastState.maxContests ?? 3);
   els.participants.value = lastState.participantsText ?? "";
   if (els.excludedWinners) els.excludedWinners.value = lastState.excludedWinnersText ?? "";
   updatePostMemoryControls();
+  syncCommentFilterVisibility();
+  syncMinAgeVisibility();
 
   $$('input[type="checkbox"]', els.modeBox).forEach((box) => {
     box.checked = lastState.entryModes?.includes(box.value) ?? box.checked;
@@ -1374,12 +1677,28 @@ function collectState() {
   const prizes = getCurrentPrizes().slice(0, winnersCount);
 
   const excludedWinnersText = els.excludedWinners ? els.excludedWinners.value.trim() : "";
+  const backupWinnersCount = els.backupWinnersCount ? clampInt(els.backupWinnersCount.value, 0, 100, 0) : 0;
+  const enableTickets = Boolean(els.enableTickets?.checked);
+  const weightRepost = els.weightRepost ? clampInt(els.weightRepost.value, 1, 100, 3) : 3;
+  const weightComment = els.weightComment ? clampInt(els.weightComment.value, 1, 100, 2) : 2;
+  const weightLike = els.weightLike ? clampInt(els.weightLike.value, 1, 100, 1) : 1;
+  const commentKeyword = els.commentKeyword ? els.commentKeyword.value.trim() : "";
+  const commentRequireMention = Boolean(els.commentRequireMention?.checked);
+  const minAgeDays = els.minAgeDays ? clampInt(els.minAgeDays.value, 1, 5000, 30) : 30;
 
   return {
     postUrl: els.postUrl.value.trim(),
     entryModes: entryModes.length ? entryModes : ["repost", "comment", "like"],
     pinnedPost: els.pinnedPost.checked,
     winnersCount,
+    backupWinnersCount,
+    enableTickets,
+    weightRepost,
+    weightComment,
+    weightLike,
+    commentKeyword,
+    commentRequireMention,
+    minAgeDays,
     prizeText: prizes.find(Boolean) || "",
     prizes,
     importScanDepth: clampInt(els.importScanDepth.value, 10, 200, 60),
@@ -1424,9 +1743,40 @@ function recompute() {
 
   const eligible = evaluated.filter((item) => item.passed);
   const excluded = evaluated.filter((item) => !item.passed);
+
+  eligible.forEach((p) => {
+    if (state.enableTickets) {
+      let t = 0;
+      if (p.actions?.repost) t += state.weightRepost;
+      if (p.actions?.comment) t += state.weightComment;
+      if (p.actions?.like) t += state.weightLike;
+      p.tickets = Math.max(1, t);
+    } else {
+      p.tickets = 1;
+    }
+  });
+
   const winnerCount = Math.min(state.winnersCount, eligible.length);
-  const winners = shuffle([...eligible]).slice(0, winnerCount);
+  let winners = [];
+  let backupWinners = [];
+
+  if (state.enableTickets) {
+    const pool = [...eligible];
+    winners = weightedPickWithoutReplacement(pool, winnerCount);
+    const backupTarget = Math.min(state.backupWinnersCount, pool.length);
+    backupWinners = weightedPickWithoutReplacement(pool, backupTarget);
+  } else {
+    const shuffled = shuffle([...eligible]);
+    winners = shuffled.slice(0, winnerCount);
+    const backupTarget = Math.min(state.backupWinnersCount, Math.max(0, shuffled.length - winnerCount));
+    backupWinners = shuffled.slice(winnerCount, winnerCount + backupTarget);
+  }
+
   const reasonCounts = tallyReasons(excluded);
+
+  const eligibleIdsStr = eligible.map((p) => String(p.id)).sort().join(",");
+  const integrityPayload = `seed:${currentDrawSeed}|post:${state.postUrl}|modes:${requiredActions.join(',')}|eligible:${eligibleIdsStr}`;
+  const integrityHash = sha256Sync(integrityPayload);
 
   // Участников всего = минимум из сырых счётчиков VK API по каждому условию.
   // Например: 11 лайков, 9 комментов, 10 репостов → 9.
@@ -1454,6 +1804,9 @@ function recompute() {
     eligible,
     excluded,
     winners,
+    backupWinners,
+    integrityHash,
+    integritySeed: currentDrawSeed,
     reasonCounts,
     totalParticipants,
     requiredActions,
@@ -1523,6 +1876,8 @@ function normalizeParticipant(raw, index) {
     repostShare: toNum(participant.repostShare ?? participant.repostRate ?? participant.repostRatio),
     isCommunity: participant.isCommunity ?? participant.community ?? null,
     isPrivate: participant.isPrivate ?? participant.private ?? null,
+    canWritePm: participant.canWritePm !== undefined ? Boolean(participant.canWritePm) : null,
+    commentText: String(participant.commentText || ""),
     hasPinnedTargetPost: toBool(participant.hasPinnedTargetPost),
     bioText: String(participant.bioText ?? participant.bio ?? participant.about ?? ""),
     wallText: String(participant.wallText ?? participant.wall ?? ""),
@@ -1684,6 +2039,29 @@ function evaluateParticipant(participant, state, requiredActions) {
     reasons.push("закрытый профиль");
   }
 
+  if (filters.requireOpenPm && participant.canWritePm === false) {
+    reasons.push("закрыты ЛС");
+  }
+
+  if (filters.minAgeDays && participant.ageDays !== null && participant.ageDays < state.minAgeDays) {
+    reasons.push(`аккаунт свежий (${participant.ageDays}д < ${state.minAgeDays}д)`);
+  }
+
+  if (state.commentKeyword && participant.actions?.comment) {
+    const text = String(participant.commentText || "").toLowerCase();
+    if (!text.includes(state.commentKeyword.toLowerCase())) {
+      reasons.push(`нет слова "${state.commentKeyword}"`);
+    }
+  }
+
+  if (state.commentRequireMention && participant.actions?.comment) {
+    const text = String(participant.commentText || "");
+    const hasMention = /@|\[id\d+\|/i.test(text);
+    if (!hasMention) {
+      reasons.push("нет отметки друга");
+    }
+  }
+
   if (state.pinnedPost) {
     // Only disqualify if we actually fetched wall data and pin was definitively absent.
     // null means wall wasn't fetched (e.g. no strictPrizeHunter and requirePinned was off during that import).
@@ -1702,14 +2080,82 @@ function evaluateParticipant(participant, state, requiredActions) {
   return [...new Set(reasons)];
 }
 
+
+function weightedPickWithoutReplacement(pool, count) {
+  const selected = [];
+  for (let step = 0; step < count; step++) {
+    if (!pool.length) break;
+    const totalWeight = pool.reduce((acc, curr) => acc + (curr.tickets || 1), 0);
+    if (totalWeight <= 0) break;
+    let rand = Math.random() * totalWeight;
+    for (let i = 0; i < pool.length; i++) {
+      rand -= (pool[i].tickets || 1);
+      if (rand <= 0 || i === pool.length - 1) {
+        selected.push(pool[i]);
+        pool.splice(i, 1);
+        break;
+      }
+    }
+  }
+  return selected;
+}
+
+function renderBackupWinners(result) {
+  if (!els.backupWinnersSection || !els.backupWinnersList) return;
+  const backups = result.backupWinners || [];
+  if (!backups.length) {
+    els.backupWinnersSection.style.display = "none";
+    els.backupWinnersList.innerHTML = "";
+    return;
+  }
+
+  els.backupWinnersSection.style.display = "block";
+  els.backupWinnersList.innerHTML = backups
+    .map((winner, index) => {
+      const initial = getInitials(winner.name);
+      const cleanAvatar = extractCleanImageUrl(winner.avatarUrl);
+      const ticketPill = result.enableTickets && winner.tickets ? `<span class="ticket-badge">🎫 ${winner.tickets} ${ticketWord(winner.tickets)}</span>` : "";
+      return `
+        <div class="winner-card">
+          ${
+            cleanAvatar
+              ? `<img class="avatar" src="${escapeAttr(cleanAvatar)}" alt="${escapeAttr(winner.name)}" onerror="this.onerror=null;this.style.display='none';if(this.nextElementSibling)this.nextElementSibling.style.display='grid';" /><div class="avatar avatar-fallback" style="display:none">${escapeHtml(initial)}</div>`
+              : `<div class="avatar avatar-fallback">${escapeHtml(initial)}</div>`
+          }
+          <div class="winner-meta">
+            <div class="winner-name">${escapeHtml(winner.name)} ${ticketPill}</div>
+            <div class="winner-sub">id${escapeHtml(winner.id)} · ${escapeHtml(shortUrl(winner.profileUrl))}</div>
+          </div>
+          <div class="winner-status backup-badge">Резерв #${index + 1}</div>
+        </div>
+      `;
+    })
+    .join("");
+}
+
+function ticketWord(num) {
+  const n = Math.abs(num) % 100;
+  const n1 = n % 10;
+  if (n > 10 && n < 20) return "билетов";
+  if (n1 > 1 && n1 < 5) return "билета";
+  if (n1 === 1) return "билет";
+  return "билетов";
+}
+
 function render(result) {
   els.participantsCount.textContent = String(result.totalParticipants);
   els.eligibleCount.textContent = String(result.eligible.length);
   els.excludedCount.textContent = String(result.excluded.length);
 
+  if (els.integrityHashPreview) {
+    els.integrityHashPreview.textContent = result.integrityHash ? `SHA-256: ${result.integrityHash}` : "Хэш формируется при розыгрыше";
+    els.integrityHashPreview.title = result.integrityHash ? `Seed: ${result.integritySeed}\nPayload SHA-256: ${result.integrityHash}` : "";
+  }
+
   els.reportPreview.textContent = buildReportText(result);
 
   renderWinners(result);
+  renderBackupWinners(result);
   renderAudit(result);
 }
 
@@ -1730,15 +2176,17 @@ function renderWinners(result) {
   els.winnersList.innerHTML = result.winners
     .map((winner, index) => {
       const initial = getInitials(winner.name);
+      const cleanAvatar = extractCleanImageUrl(winner.avatarUrl);
+      const ticketPill = result.enableTickets && winner.tickets ? `<span class="ticket-badge">🎫 ${winner.tickets} ${ticketWord(winner.tickets)}</span>` : "";
       return `
         <div class="winner-card">
           ${
-            winner.avatarUrl
-              ? `<img class="avatar" src="${escapeAttr(winner.avatarUrl)}" alt="${escapeAttr(winner.name)}" />`
+            cleanAvatar
+              ? `<img class="avatar" src="${escapeAttr(cleanAvatar)}" alt="${escapeAttr(winner.name)}" onerror="this.onerror=null;this.style.display='none';if(this.nextElementSibling)this.nextElementSibling.style.display='grid';" /><div class="avatar avatar-fallback" style="display:none">${escapeHtml(initial)}</div>`
               : `<div class="avatar avatar-fallback">${escapeHtml(initial)}</div>`
           }
           <div class="winner-meta">
-            <div class="winner-name">${escapeHtml(winner.name)}</div>
+            <div class="winner-name">${escapeHtml(winner.name)} ${ticketPill}</div>
           <div class="winner-sub">id${escapeHtml(winner.id)} · ${escapeHtml(shortUrl(winner.profileUrl))}</div>
           </div>
           <div class="winner-status">${index + 1} место</div>
@@ -1811,10 +2259,23 @@ function buildReportText(result) {
   if (result.winners.length) {
     result.winners.forEach((winner, index) => {
       const prize = getPrizeForPlace(result, index);
-      lines.push(`${index + 1}. ${winner.name} - ${winner.profileUrl}${prize ? ` - 🎁 ${prize}` : ""}`);
+      const ticketsInfo = result.enableTickets && winner.tickets ? ` (🎫 ${winner.tickets} ${ticketWord(winner.tickets)})` : "";
+      lines.push(`${index + 1}. [id${winner.id}|${winner.name}]${ticketsInfo} - ${winner.profileUrl}${prize ? ` - 🎁 ${prize}` : ""}`);
     });
   } else {
     lines.push("Пока не выбран");
+  }
+
+  if (result.backupWinners && result.backupWinners.length > 0) {
+    lines.push("", "📋 Резервные победители:");
+    result.backupWinners.forEach((backup, index) => {
+      lines.push(`Резерв #${index + 1}: [id${backup.id}|${backup.name}] - ${backup.profileUrl}`);
+    });
+  }
+
+  if (result.integrityHash) {
+    lines.push("", `🛡️ Контроль честности (SHA-256): ${result.integrityHash}`);
+    lines.push(`🎲 Зерно (Seed): ${result.integritySeed || ""}`);
   }
 
   lines.push("", "✨ Подведено с помощью: Рандомайзер для конкурсов");
@@ -1874,15 +2335,24 @@ function downloadText(filename, text) {
 async function downloadResultImage(result) {
   const canvas = els.canvas;
   canvas.width = 1600;
-  canvas.height = Math.max(1120, 650 + result.winners.length * 210 + 140);
+  const backupCount = result.backupWinners?.length || 0;
+  canvas.height = Math.max(1160, 680 + result.winners.length * 205 + (backupCount > 0 ? 160 : 0) + 140);
   const ctx = canvas.getContext("2d");
 
+  const avatarImages = await Promise.all(
+    result.winners.map(async (winner) => {
+      if (!winner.avatarUrl) return null;
+      return await loadAvatarImage(winner.avatarUrl);
+    })
+  );
+
   try {
-    await drawResultCanvas(ctx, result, true);
+    drawResultCanvas(ctx, result, avatarImages);
     const blob = await canvasToBlob(canvas);
     downloadBlob(blob, "vk-results.png");
-  } catch {
-    await drawResultCanvas(ctx, result, false);
+  } catch (err) {
+    console.warn("Canvas export fallback:", err);
+    drawResultCanvas(ctx, result, []);
     const blob = await canvasToBlob(canvas);
     downloadBlob(blob, "vk-results.png");
   }
@@ -1908,7 +2378,7 @@ function downloadBlob(blob, filename) {
   URL.revokeObjectURL(url);
 }
 
-async function drawResultCanvas(ctx, result, allowRemoteImages) {
+function drawResultCanvas(ctx, result, avatarImages = []) {
   const w = ctx.canvas.width;
   const h = ctx.canvas.height;
   ctx.clearRect(0, 0, w, h);
@@ -1957,10 +2427,14 @@ async function drawResultCanvas(ctx, result, allowRemoteImages) {
     ctx.strokeStyle = "rgba(28,57,91,0.12)";
     ctx.stroke();
 
-    await drawAvatar(ctx, winner, 128, rowY + 24, 104, allowRemoteImages);
+    const avatarImage = avatarImages[i] || null;
+    drawAvatar(ctx, winner, avatarImage, 128, rowY + 24, 104);
+
     ctx.fillStyle = "#10233d";
     ctx.font = "800 30px Manrope, sans-serif";
-    ctx.fillText(winner.name, 260, rowY + 56);
+    const ticketInfo = result.enableTickets && winner.tickets ? ` (🎫 ${winner.tickets} ${ticketWord(winner.tickets)})` : "";
+    ctx.fillText(`${winner.name}${ticketInfo}`, 260, rowY + 56);
+
     ctx.font = "600 20px Manrope, sans-serif";
     ctx.fillStyle = "#5f708a";
     ctx.fillText(`id${winner.id}`, 260, rowY + 90);
@@ -1973,10 +2447,34 @@ async function drawResultCanvas(ctx, result, allowRemoteImages) {
     drawWinnerBadge(ctx, w - 270, rowY + 62, i + 1);
   }
 
-  const footerY = Math.max(1110, startY + result.winners.length * rowStep + 20);
+  let nextY = startY + result.winners.length * rowStep + 40;
+
+  // Draw backup winners on canvas if present
+  if (result.backupWinners && result.backupWinners.length > 0) {
+    ctx.fillStyle = "#ffffff";
+    roundRect(ctx, 70, nextY, w - 140, 110, 20);
+    ctx.fill();
+    ctx.strokeStyle = "rgba(240,141,47,0.3)";
+    ctx.stroke();
+
+    ctx.fillStyle = "#e07810";
+    ctx.font = "800 22px Manrope, sans-serif";
+    ctx.fillText("📋 Резервные победители:", 100, nextY + 44);
+
+    ctx.fillStyle = "#5f708a";
+    ctx.font = "600 19px Manrope, sans-serif";
+    const backupLine = result.backupWinners.map((b, idx) => `#${idx + 1} ${b.name} (id${b.id})`).join("   ·   ");
+    ctx.fillText(shortenText(backupLine, 95), 100, nextY + 80);
+
+    nextY += 140;
+  }
+
+  // Provably Fair SHA-256 footer
+  const footerY = Math.max(1110, nextY + 10);
   ctx.fillStyle = "#5f708a";
   ctx.font = "600 19px Manrope, sans-serif";
-  ctx.fillText(`Рандомайзер для конкурсов. Участников всего: ${result.totalParticipants}.`, 70, footerY);
+  const hashNote = result.integrityHash ? ` · SHA-256: ${shortenText(result.integrityHash, 32)}` : "";
+  ctx.fillText(`Рандомайзер для конкурсов. Участников: ${result.totalParticipants}${hashNote}`, 70, footerY);
 }
 
 function drawMetaChips(ctx, x, y, maxWidth, labels) {
@@ -2057,16 +2555,17 @@ function roundRect(ctx, x, y, width, height, radius) {
   ctx.closePath();
 }
 
-async function drawAvatar(ctx, winner, x, y, size, allowRemoteImages) {
-  if (allowRemoteImages && winner.avatarUrl) {
-    const image = await loadImage(resolveAvatarSource(winner.avatarUrl));
-    if (image) {
+function drawAvatar(ctx, winner, avatarImage, x, y, size) {
+  if (avatarImage) {
+    try {
       ctx.save();
       roundRect(ctx, x, y, size, size, size / 2);
       ctx.clip();
-      ctx.drawImage(image, x, y, size, size);
+      ctx.drawImage(avatarImage, x, y, size, size);
       ctx.restore();
       return;
+    } catch (e) {
+      console.warn("Failed to render avatar image:", e);
     }
   }
 
@@ -2086,57 +2585,124 @@ async function drawAvatar(ctx, winner, x, y, size, allowRemoteImages) {
   ctx.textBaseline = "alphabetic";
 }
 
-function loadImage(url) {
-  return new Promise(async (resolve) => {
-    if (!url) {
-      resolve(null);
-      return;
-    }
-
+function extractCleanImageUrl(rawUrl) {
+  if (!rawUrl) return "";
+  let url = String(rawUrl).trim();
+  while (url.includes("url=")) {
     try {
-      if (/^data:|^blob:/i.test(url)) {
-        const image = new Image();
-        image.onload = () => resolve(image);
-        image.onerror = () => resolve(null);
-        image.src = url;
-        return;
+      const match = url.match(/[?&]url=([^&]+)/);
+      if (match && match[1]) {
+        const decoded = decodeURIComponent(match[1]);
+        if (/^https?:\/\//i.test(decoded)) {
+          url = decoded;
+          continue;
+        }
       }
-
-      const response = await fetch(url, { mode: "cors" });
-      if (!response.ok) {
-        resolve(null);
-        return;
-      }
-
-      const blob = await response.blob();
-      const objectUrl = URL.createObjectURL(blob);
-      const image = new Image();
-      image.onload = () => {
-        URL.revokeObjectURL(objectUrl);
-        resolve(image);
-      };
-      image.onerror = () => {
-        URL.revokeObjectURL(objectUrl);
-        resolve(null);
-      };
-      image.src = objectUrl;
-    } catch {
-      resolve(null);
-    }
-  });
-}
-
-function resolveAvatarSource(url) {
-  if (!url) return "";
-  if (/^data:|^blob:/i.test(url)) return url;
-  if (/^https?:\/\//i.test(url)) {
-    if (canUseBackendApi()) {
-      return apiUrl(`/api/image?url=${encodeURIComponent(url)}`);
-    } else {
-      return `https://wsrv.nl/?url=${encodeURIComponent(url)}&output=webp`;
-    }
+    } catch {}
+    break;
   }
   return url;
+}
+
+function getCandidateAvatarUrls(rawUrl) {
+  const cleanUrl = extractCleanImageUrl(rawUrl);
+  if (!cleanUrl) return [];
+  if (/^data:|^blob:/i.test(cleanUrl)) return [cleanUrl];
+
+  const candidates = [];
+
+  // 1. Backend proxy if actively verified ready or configured
+  if (canUseBackendApi() && (importServerOk || getApiBaseUrl())) {
+    candidates.push(apiUrl(`/api/image?url=${encodeURIComponent(cleanUrl)}`));
+  }
+
+  // 2. wsrv.nl CDN proxy
+  candidates.push(`https://wsrv.nl/?url=${encodeURIComponent(cleanUrl)}`);
+
+  // 3. images.weserv.nl mirror
+  candidates.push(`https://images.weserv.nl/?url=${encodeURIComponent(cleanUrl)}`);
+
+  // 4. Direct URL
+  candidates.push(cleanUrl);
+
+  return [...new Set(candidates)];
+}
+
+async function loadAvatarImage(rawUrl) {
+  const candidates = getCandidateAvatarUrls(rawUrl);
+  if (!candidates.length) return null;
+
+  for (const candidate of candidates) {
+    const img = await fetchImageSafely(candidate, 4000);
+    if (img) return img;
+  }
+  return null;
+}
+
+async function fetchImageSafely(url, timeoutMs = 4000) {
+  if (!url) return null;
+
+  if (/^data:|^blob:/i.test(url)) {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => resolve(null);
+      img.src = url;
+    });
+  }
+
+  const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+  const timer = setTimeout(() => controller && controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(url, {
+      mode: "cors",
+      signal: controller ? controller.signal : undefined,
+    });
+    clearTimeout(timer);
+    if (!response.ok) return null;
+
+    const blob = await response.blob();
+    if (!blob || blob.size === 0) return null;
+
+    // Convert blob to Data URL to avoid premature URL.revokeObjectURL bugs & ensure 100% clean canvas
+    const dataUrl = await blobToDataUrl(blob);
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => resolve(null);
+      img.src = dataUrl;
+    });
+  } catch {
+    clearTimeout(timer);
+    // Direct Image element fallback with crossOrigin
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      const imgTimer = setTimeout(() => {
+        img.src = "";
+        resolve(null);
+      }, timeoutMs);
+      img.onload = () => {
+        clearTimeout(imgTimer);
+        resolve(img);
+      };
+      img.onerror = () => {
+        clearTimeout(imgTimer);
+        resolve(null);
+      };
+      img.src = url;
+    });
+  }
+}
+
+function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error("blob read error"));
+    reader.readAsDataURL(blob);
+  });
 }
 
 function getInitials(name) {
@@ -2207,4 +2773,367 @@ function flashButton(button, label) {
   window.setTimeout(() => {
     button.textContent = old;
   }, 1200);
+}
+
+
+// --- Stories 9:16 Canvas Generator ---
+async function downloadStoryImage(result) {
+  const canvas = els.storyCanvas;
+  canvas.width = 1080;
+  canvas.height = 1920;
+  const ctx = canvas.getContext("2d");
+
+  const avatarImages = await Promise.all(
+    result.winners.slice(0, 5).map(async (winner) => {
+      if (!winner.avatarUrl) return null;
+      return await loadAvatarImage(winner.avatarUrl);
+    })
+  );
+
+  await drawStoryCanvas(ctx, result, avatarImages);
+  const blob = await canvasToBlob(canvas);
+  downloadBlob(blob, "vk-results-story.png");
+}
+
+async function drawStoryCanvas(ctx, result, avatarImages = []) {
+  const w = ctx.canvas.width;
+  const h = ctx.canvas.height;
+  ctx.clearRect(0, 0, w, h);
+
+  const bg = ctx.createLinearGradient(0, 0, w, h);
+  bg.addColorStop(0, "#0e1c31");
+  bg.addColorStop(0.5, "#152a48");
+  bg.addColorStop(1, "#0d1829");
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, w, h);
+
+  drawSoftOrb(ctx, 160, 200, 320, "rgba(38,128,235,0.22)");
+  drawSoftOrb(ctx, 920, 1600, 360, "rgba(23,140,87,0.18)");
+
+  ctx.fillStyle = "rgba(38,128,235,0.18)";
+  roundRect(ctx, w / 2 - 200, 90, 400, 52, 999);
+  ctx.fill();
+  ctx.fillStyle = "#5ba2f8";
+  ctx.font = "800 22px Manrope, sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText("ИТОГИ РОЗЫГРЫША", w / 2, 124);
+
+  ctx.fillStyle = "#ffffff";
+  ctx.font = "800 68px Manrope, sans-serif";
+  ctx.fillText("🏆 Победители", w / 2, 220);
+
+  ctx.fillStyle = "#8fa7c7";
+  ctx.font = "600 26px Manrope, sans-serif";
+  const postLine = result.postUrl ? `Пост: ${shortUrl(result.postUrl)}` : "Конкурс ВКонтакте";
+  ctx.fillText(shortenText(postLine, 45), w / 2, 275);
+
+  ctx.fillStyle = "rgba(255,255,255,0.08)";
+  roundRect(ctx, 80, 320, w - 160, 90, 24);
+  ctx.fill();
+  ctx.fillStyle = "#ffffff";
+  ctx.font = "800 36px Manrope, sans-serif";
+  ctx.fillText(String(result.totalParticipants), 240, 368);
+  ctx.fillText(String(result.winners.length), w - 240, 368);
+  ctx.fillStyle = "#8fa7c7";
+  ctx.font = "600 20px Manrope, sans-serif";
+  ctx.fillText("участников всего", 240, 395);
+  ctx.fillText("победителей", w - 240, 395);
+  ctx.textAlign = "start";
+
+  const displayWinners = result.winners.slice(0, 4);
+  const cardYStart = 450;
+  const cardHeight = 220;
+  const cardGap = 28;
+
+  for (let i = 0; i < displayWinners.length; i++) {
+    const winner = displayWinners[i];
+    const prize = getPrizeForPlace(result, i);
+    const cardY = cardYStart + i * (cardHeight + cardGap);
+
+    ctx.fillStyle = "rgba(255,255,255,0.96)";
+    roundRect(ctx, 80, cardY, w - 160, cardHeight, 32);
+    ctx.fill();
+
+    const avatarImg = avatarImages[i] || null;
+    drawAvatar(ctx, winner, avatarImg, 116, cardY + 36, 148);
+
+    ctx.fillStyle = "#10233d";
+    ctx.font = "800 40px Manrope, sans-serif";
+    ctx.fillText(shortenText(winner.name, 18), 296, cardY + 84);
+
+    ctx.fillStyle = "#5f708a";
+    ctx.font = "600 26px Manrope, sans-serif";
+    ctx.fillText(`id${winner.id}`, 296, cardY + 128);
+
+    if (prize) {
+      ctx.fillStyle = "#1763c4";
+      ctx.font = "700 26px Manrope, sans-serif";
+      ctx.fillText(`🎁 ${shortenText(prize, 32)}`, 296, cardY + 174);
+    }
+
+    const placeBadgeX = w - 240;
+    const placeBadgeY = cardY + 40;
+    ctx.fillStyle = i === 0 ? "rgba(240,141,47,0.16)" : "rgba(23,140,87,0.14)";
+    roundRect(ctx, placeBadgeX, placeBadgeY, 130, 48, 999);
+    ctx.fill();
+    ctx.fillStyle = i === 0 ? "#e07810" : "#178c57";
+    ctx.font = "800 24px Manrope, sans-serif";
+    ctx.fillText(`${i + 1} место`, placeBadgeX + 18, placeBadgeY + 33);
+  }
+
+  if (result.backupWinners && result.backupWinners.length > 0) {
+    const backupY = cardYStart + displayWinners.length * (cardHeight + cardGap) + 10;
+    ctx.fillStyle = "rgba(255,255,255,0.08)";
+    roundRect(ctx, 80, backupY, w - 160, 90, 20);
+    ctx.fill();
+    ctx.fillStyle = "#8fa7c7";
+    ctx.font = "600 22px Manrope, sans-serif";
+    const backupNames = result.backupWinners.slice(0, 3).map((b, idx) => `#${idx + 1} ${b.name}`).join(" · ");
+    ctx.fillText(`Резерв: ${shortenText(backupNames, 46)}`, 110, backupY + 54);
+  }
+
+  ctx.fillStyle = "rgba(255,255,255,0.06)";
+  roundRect(ctx, 80, h - 220, w - 160, 130, 24);
+  ctx.fill();
+  ctx.fillStyle = "#5ba2f8";
+  ctx.font = "700 22px Manrope, sans-serif";
+  ctx.fillText("🛡️ Контроль честности (SHA-256)", 110, h - 170);
+  ctx.fillStyle = "#8fa7c7";
+  ctx.font = "600 18px monospace";
+  ctx.fillText(result.integrityHash ? shortenText(result.integrityHash, 48) : "Provably Fair Verified", 110, h - 125);
+}
+
+// --- VK Bridge Post Sharing ---
+async function shareResultToVk(result) {
+  const bridge = window.vkBridge;
+  const text = buildReportText(result);
+
+  if (bridge && typeof bridge.send === "function") {
+    try {
+      await bridge.send("VKWebAppShowWallPostBox", { message: text });
+      return;
+    } catch (e) {
+      console.warn("VKWebAppShowWallPostBox failed, falling back to copy", e);
+    }
+  }
+
+  await navigator.clipboard.writeText(text);
+  if (els.shareVk) flashButton(els.shareVk, "Текст скопирован!");
+}
+
+// --- Interactive Roulette Controller ---
+let rouletteSpinIndex = 0;
+let rouletteIsSpinning = false;
+let rouletteAngle = 0;
+
+function openRouletteModal() {
+  const result = lastResult ?? recompute();
+  if (!result.winners.length) {
+    alert("Сначала подведите итоги или загрузите участников!");
+    return;
+  }
+  rouletteSpinIndex = 0;
+  els.rouletteModal.classList.remove("hidden");
+  updateRouletteButtonState(result);
+  drawRouletteWheel(result, rouletteAngle);
+}
+
+function closeRouletteModal() {
+  els.rouletteModal.classList.add("hidden");
+  if (mediaRecorder && mediaRecorder.state === "recording") {
+    mediaRecorder.stop();
+  }
+}
+
+function toggleRouletteSound() {
+  soundEnabled = !soundEnabled;
+  if (els.rouletteSoundToggle) {
+    els.rouletteSoundToggle.textContent = soundEnabled ? "🔊 Звук вкл" : "🔇 Звук выкл";
+  }
+}
+
+function updateRouletteButtonState(result) {
+  if (!els.rouletteSpinBtn) return;
+  const total = result.winners.length;
+  if (rouletteSpinIndex >= total) {
+    els.rouletteSpinBtn.textContent = "Все победители открыты! 🎉";
+    els.rouletteSpinBtn.disabled = true;
+    return;
+  }
+  els.rouletteSpinBtn.disabled = false;
+  const currentPlace = total - rouletteSpinIndex;
+  els.rouletteSpinBtn.textContent = `Крутить для места #${currentPlace}`;
+  if (els.rouletteStatus) {
+    els.rouletteStatus.textContent = `Открытие места ${currentPlace} из ${total}`;
+  }
+}
+
+function drawRouletteWheel(result, angle = 0) {
+  const canvas = els.rouletteCanvas;
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  const w = canvas.width;
+  const h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+
+  const cx = w / 2;
+  const cy = h / 2;
+  const radius = Math.min(cx, cy) - 24;
+
+  const participants = result.eligible.length > 0 ? result.eligible.slice(0, 36) : [{ name: "Участник 1" }];
+  const numSlices = Math.max(8, Math.min(36, participants.length));
+  const sliceAngle = (Math.PI * 2) / numSlices;
+  const sliceColors = ["#2680eb", "#178c57", "#ffbe3b", "#ff5252", "#9c27b0", "#00bcd4", "#e91e63", "#3f51b5"];
+
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.rotate(angle);
+
+  for (let i = 0; i < numSlices; i++) {
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.arc(0, 0, radius, i * sliceAngle, (i + 1) * sliceAngle);
+    ctx.closePath();
+    ctx.fillStyle = sliceColors[i % sliceColors.length];
+    ctx.fill();
+    ctx.strokeStyle = "rgba(255,255,255,0.3)";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    ctx.save();
+    ctx.rotate(i * sliceAngle + sliceAngle / 2);
+    ctx.textAlign = "right";
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "bold 13px Manrope, sans-serif";
+    const p = participants[i % participants.length];
+    const nameStr = p ? (p.name || `id${p.id}`).slice(0, 14) : `Участник ${i + 1}`;
+    ctx.fillText(nameStr, radius - 16, 5);
+    ctx.restore();
+  }
+
+  ctx.restore();
+
+  ctx.fillStyle = "#ffffff";
+  ctx.beginPath();
+  ctx.arc(cx, cy, 38, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = "#2680eb";
+  ctx.lineWidth = 4;
+  ctx.stroke();
+
+  ctx.fillStyle = "#10233d";
+  ctx.font = "800 24px Manrope, sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText("🎰", cx, cy + 8);
+}
+
+function spinRoulette() {
+  const result = lastResult ?? recompute();
+  if (rouletteIsSpinning || rouletteSpinIndex >= result.winners.length) return;
+
+  rouletteIsSpinning = true;
+  if (els.rouletteSpinBtn) els.rouletteSpinBtn.disabled = true;
+
+  const total = result.winners.length;
+  const winnerIndex = total - 1 - rouletteSpinIndex;
+  const currentWinner = result.winners[winnerIndex];
+  const placeNumber = winnerIndex + 1;
+
+  const spinDuration = 3200;
+  const startAngle = rouletteAngle;
+  const extraRotations = (4 + Math.random() * 3) * Math.PI * 2;
+  const targetAngle = startAngle + extraRotations;
+  const startTime = Date.now();
+  let lastTickAngle = startAngle;
+
+  function animate() {
+    const elapsed = Date.now() - startTime;
+    const progress = Math.min(1, elapsed / spinDuration);
+    const ease = 1 - Math.pow(1 - progress, 3);
+    rouletteAngle = startAngle + (targetAngle - startAngle) * ease;
+
+    if (Math.abs(rouletteAngle - lastTickAngle) > 0.22) {
+      playTickSound();
+      lastTickAngle = rouletteAngle;
+    }
+
+    drawRouletteWheel(result, rouletteAngle);
+
+    if (progress < 1) {
+      requestAnimationFrame(animate);
+    } else {
+      rouletteIsSpinning = false;
+      rouletteSpinIndex++;
+      playWinSound();
+      triggerConfetti(3500);
+
+      if (els.rouletteRevealCard && els.revealPlaceBadge && els.revealWinnerInfo) {
+        els.rouletteRevealCard.style.display = "flex";
+        els.revealPlaceBadge.textContent = `${placeNumber} место`;
+        const prize = getPrizeForPlace(result, winnerIndex);
+        els.revealWinnerInfo.innerHTML = `
+          <strong>${escapeHtml(currentWinner.name)} (id${currentWinner.id})</strong>
+          <span>${prize ? `🎁 Приз: ${escapeHtml(prize)}` : shortUrl(currentWinner.profileUrl)}</span>
+        `;
+      }
+
+      updateRouletteButtonState(result);
+    }
+  }
+
+  requestAnimationFrame(animate);
+}
+
+function revealAllRoulette() {
+  const result = lastResult ?? recompute();
+  rouletteSpinIndex = result.winners.length;
+  updateRouletteButtonState(result);
+  playWinSound();
+  triggerConfetti(3000);
+  if (els.rouletteRevealCard && els.revealPlaceBadge && els.revealWinnerInfo) {
+    els.rouletteRevealCard.style.display = "flex";
+    els.revealPlaceBadge.textContent = "Итоги";
+    els.revealWinnerInfo.innerHTML = `<strong>Все ${result.winners.length} победителей определены!</strong><span>Смотрите подробный список в основном окне</span>`;
+  }
+}
+
+function toggleRouletteRecording() {
+  const canvas = els.rouletteCanvas;
+  if (!canvas) return;
+
+  if (isRecordingVideo) {
+    if (mediaRecorder && mediaRecorder.state === "recording") {
+      mediaRecorder.stop();
+    }
+    isRecordingVideo = false;
+    if (els.rouletteRecordBtn) els.rouletteRecordBtn.textContent = "📹 Записать видео (WebM)";
+    return;
+  }
+
+  if (typeof canvas.captureStream !== "function" || typeof MediaRecorder === "undefined") {
+    alert("Запись видео не поддерживается в этом браузере.");
+    return;
+  }
+
+  try {
+    const stream = canvas.captureStream(30);
+    recordedChunks = [];
+    mediaRecorder = new MediaRecorder(stream, { mimeType: "video/webm" });
+
+    mediaRecorder.ondataavailable = (e) => {
+      if (e.data && e.data.size > 0) recordedChunks.push(e.data);
+    };
+
+    mediaRecorder.onstop = () => {
+      const blob = new Blob(recordedChunks, { type: "video/webm" });
+      downloadBlob(blob, "vk-roulette-draw.webm");
+    };
+
+    mediaRecorder.start();
+    isRecordingVideo = true;
+    if (els.rouletteRecordBtn) els.rouletteRecordBtn.textContent = "⏹️ Остановить запись";
+  } catch (err) {
+    console.error("Recording start failed", err);
+    alert("Не удалось запустить запись видео: " + err.message);
+  }
 }
