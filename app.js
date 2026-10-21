@@ -49,7 +49,7 @@ const els = {
   copyReport: $("#copy-report"),
   drawWinners: $("#draw-winners"),
   downloadReport: $("#download-report"),
-  downloadImages: $("#download-image, [data-action='download-image']"),
+  downloadImages: $$("#download-image, [data-action='download-image']"),
   useSample: $("#use-sample"),
   clearParticipants: $("#clear-participants"),
   jsonFile: $("#json-file"),
@@ -2276,10 +2276,13 @@ function downloadText(filename, text) {
   const link = document.createElement("a");
   link.href = url;
   link.download = filename;
+  link.style.display = "none";
   document.body.appendChild(link);
   link.click();
-  link.remove();
-  URL.revokeObjectURL(url);
+  setTimeout(() => {
+    link.remove();
+    URL.revokeObjectURL(url);
+  }, 60000);
 }
 
 async function downloadResultImage(result) {
@@ -2322,10 +2325,13 @@ function downloadBlob(blob, filename) {
   const link = document.createElement("a");
   link.href = url;
   link.download = filename;
+  link.style.display = "none";
   document.body.appendChild(link);
   link.click();
-  link.remove();
-  URL.revokeObjectURL(url);
+  setTimeout(() => {
+    link.remove();
+    URL.revokeObjectURL(url);
+  }, 60000);
 }
 
 function drawResultCanvas(ctx, result, avatarImages = []) {
