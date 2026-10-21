@@ -2223,10 +2223,6 @@ function buildReportText(result) {
     });
   }
 
-  if (result.integrityHash) {
-    lines.push("", `🛡️ Контроль честности (SHA-256): ${result.integrityHash}`);
-    lines.push(`🎲 Зерно (Seed): ${result.integritySeed || ""}`);
-  }
 
   lines.push("", "✨ Подведено с помощью: Рандомайзер для конкурсов");
 
@@ -2425,12 +2421,10 @@ function drawResultCanvas(ctx, result, avatarImages = []) {
     nextY += 140;
   }
 
-  // Provably Fair SHA-256 footer
   const footerY = Math.max(1110, nextY + 10);
   ctx.fillStyle = "#5f708a";
   ctx.font = "600 19px Manrope, sans-serif";
-  const hashNote = result.integrityHash ? ` · SHA-256: ${shortenText(result.integrityHash, 32)}` : "";
-  ctx.fillText(`Рандомайзер для конкурсов. Участников: ${result.totalParticipants}${hashNote}`, 70, footerY);
+  ctx.fillText(`Рандомайзер для конкурсов. Участников: ${result.totalParticipants}`, 70, footerY);
 }
 
 function drawMetaChips(ctx, x, y, maxWidth, labels) {
@@ -2848,15 +2842,7 @@ async function drawStoryCanvas(ctx, result, avatarImages = []) {
     ctx.fillText(`Резерв: ${shortenText(backupNames, 46)}`, 110, backupY + 54);
   }
 
-  ctx.fillStyle = "rgba(255,255,255,0.06)";
-  roundRect(ctx, 80, h - 220, w - 160, 130, 24);
-  ctx.fill();
-  ctx.fillStyle = "#5ba2f8";
-  ctx.font = "700 22px Manrope, sans-serif";
-  ctx.fillText("🛡️ Контроль честности (SHA-256)", 110, h - 170);
-  ctx.fillStyle = "#8fa7c7";
-  ctx.font = "600 18px monospace";
-  ctx.fillText(result.integrityHash ? shortenText(result.integrityHash, 48) : "Provably Fair Verified", 110, h - 125);
+
 }
 
 // --- VK Bridge Post Sharing ---

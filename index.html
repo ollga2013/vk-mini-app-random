@@ -16,13 +16,13 @@
           <p class="eyebrow">Рандомайзер для конкурсов</p>
           <h1>Подведение итогов</h1>
           <p class="lead">
-            Честный розыгрыш с защитой от ботов, контролем честности (SHA-256), билетами за активность и красивыми картинками для постов и историй.
+            Честный розыгрыш с защитой от ботов, билетами за активность и красивыми картинками для постов и историй.
           </p>
         </div>
         <div class="topbar-actions">
           <button class="ghost" id="load-demo" title="Загрузить тестовых участников для проверки работы приложения">Демо</button>
           <button class="ghost" id="copy-report" title="Скопировать готовый текстовый отчет с упоминаниями победителей в буфер обмена">Скопировать отчет</button>
-          <button class="primary" id="draw-winners" title="Случайно определить победителей среди допущенных участников с расчетом хэша честности SHA-256">Подвести итоги</button>
+          <button class="primary" id="draw-winners" title="Случайно определить победителей среди допущенных участников">Подвести итоги</button>
         </div>
       </header>
 
@@ -230,8 +230,8 @@
 
         <article class="panel transparency-panel">
           <div class="panel-head">
-            <h2>Прозрачность</h2>
-            <span class="subtle">Контроль и экспорт</span>
+            <h2>Итоги и экспорт</h2>
+            <span class="subtle">Отчет и сохранение</span>
           </div>
 
           <div class="stats" title="Сводная статистика участников розыгрыша">
@@ -247,19 +247,6 @@
               <strong id="excluded-count">0</strong>
               <span>исключено</span>
             </div>
-          </div>
-
-          <div class="audit" id="audit-log" title="Причины исключения участников фильтрами"></div>
-
-          <div class="integrity-badge" id="integrity-block" title="Контроль честности (Provably Fair) на базе криптографического хэша SHA-256">
-            <div class="integrity-head">
-              <span class="integrity-icon">🛡️</span>
-              <div>
-                <strong>Контроль честности (SHA-256)</strong>
-                <span class="subtle integrity-hash" id="integrity-hash-preview" title="Контрольная сумма сформированного розыгрыша">Хэш формируется при розыгрыше</span>
-              </div>
-            </div>
-            <button class="ghost small" id="copy-hash-btn" type="button" title="Скопировать SHA-256 хэш розыгрыша в буфер обмена">Скопировать хэш</button>
           </div>
 
           <div class="report-box" id="report-preview" title="Предпросмотр текстового отчета для публикации в посте группы">
