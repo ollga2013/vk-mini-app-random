@@ -847,7 +847,8 @@ async function paginateIdsDetailed(fetchPage, pageSize = 100, maxItems = MAX_IMP
     if (page.length < count || (Number.isFinite(total) && offset + page.length >= total)) break;
     offset += page.length;
   }
-  const ids = uniqPositive(results).slice(0, maxItems);
+  // Keep negative VK owner IDs: they represent community reposts.
+  const ids = uniqVkIds(results).slice(0, maxItems);
   return { ids, total: Math.max(ids.length, total || 0) };
 }
 

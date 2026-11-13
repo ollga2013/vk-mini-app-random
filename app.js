@@ -1441,7 +1441,8 @@ function extractVkIdsFromPage(page) {
       const id = Number(item?.id);
       return Number.isInteger(id) && id > 0 ? id : null;
     })
-    .filter((id) => Number.isInteger(id) && id > 0);
+    // VK uses negative owner_id values for community reposts.
+    .filter((id) => Number.isInteger(id) && id !== 0);
 }
 
 function ensureActionRow(map, id) {
