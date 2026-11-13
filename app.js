@@ -541,16 +541,16 @@ function handleModeChange(event) {
   if (!(target instanceof HTMLInputElement) || target.type !== "checkbox") return;
 
   if (target.value === "all") {
-    const shouldSelectAll = target.checked;
-    $$('input[type="checkbox"][value="repost"], input[type="checkbox"][value="comment"], input[type="checkbox"][value="like"]', els.modeBox).forEach(
-      (box) => {
-        box.checked = shouldSelectAll;
-      },
-    );
-  } else {
-    const actionBoxes = $$('input[type="checkbox"][value="repost"], input[type="checkbox"][value="comment"], input[type="checkbox"][value="like"]', els.modeBox);
+    if (target.checked) {
+      $$('input[type="checkbox"][value="repost"], input[type="checkbox"][value="comment"], input[type="checkbox"][value="like"]', els.modeBox).forEach(
+        (box) => {
+          box.checked = true;
+        },
+      );
+    }
+  } else if (!target.checked) {
     const allBox = $('input[type="checkbox"][value="all"]', els.modeBox);
-    allBox.checked = actionBoxes.every((box) => box.checked);
+    allBox.checked = false;
   }
   persistAndRefresh();
 }
@@ -782,6 +782,7 @@ async function importFromServer(state, userToken) {
     body: JSON.stringify({
       postUrl: state.postUrl,
       entryModes: state.entryModes,
+      requireAll: Boolean(state.requireAllActions),
       scanDepth: state.importScanDepth,
       strictPrizeHunter: Boolean(state.filters?.strictPrizeHunter),
       requirePinned: Boolean(state.pinnedPost),
@@ -802,7 +803,8 @@ async function importFromVkBridge(state, userToken) {
   if (!parsed) throw new Error("Не удалось распознать ссылку на пост VK.");
 
   const actionMap = new Map();
-  const modes = state.entryModes.includes("all") ? ["repost", "comment", "like"] : state.entryModes;
+  const modes = state.entryModes.filter((mode) => mode !== "all");
+  const requireAllActions = Boolean(state.requireAllActions || state.entryModes.includes("all"));
   const sourceCounts = {};
   const tasks = [];
 
@@ -886,6 +888,7 @@ async function importFromVkBridge(state, userToken) {
     parsed,
     actionMap,
     selectedModes: modes,
+    requireAllActions,
     sourceCounts,
     userToken,
   });
@@ -928,9 +931,9 @@ function rewriteApiImageUrls(payload) {
   });
 }
 
-async function buildBridgeImportPayload({ state, parsed, actionMap, selectedModes, sourceCounts = {}, userToken }) {
+async function buildBridgeImportPayload({ state, parsed, actionMap, selectedModes, requireAllActions = false, sourceCounts = {}, userToken }) {
   const ids = Array.from(actionMap.entries())
-    .filter(([, flags]) => selectedModes.every((mode) => flags[mode]))
+    .filter(([, flags]) => matchesSelectedActions(flags, selectedModes, requireAllActions))
     .map(([id]) => id);
   if (!ids.length) {
     return {
@@ -940,9 +943,11 @@ async function buildBridgeImportPayload({ state, parsed, actionMap, selectedMode
         ownerId: parsed.ownerId,
         postId: parsed.postId,
         selectedModes,
+        requireAllActions,
         importedCount: 0,
+        matchedCount: 0,
         sourceCounts,
-        totalParticipants: totalFromSourceCounts(sourceCounts, 0),
+        totalParticipants: 0,
         clientBridgeImport: true,
         note: "Участники по выбранным условиям не найдены.",
       },
@@ -991,9 +996,11 @@ async function buildBridgeImportPayload({ state, parsed, actionMap, selectedMode
       ownerId: parsed.ownerId,
       postId: parsed.postId,
       selectedModes,
+      requireAllActions,
       importedCount: participants.length,
+      matchedCount: ids.length,
       sourceCounts,
-      totalParticipants: totalFromSourceCounts(sourceCounts, participants.length),
+      totalParticipants: ids.length,
       scanDepth: state.importScanDepth,
       clientBridgeImport: true,
       repostImportAvailable: true,
@@ -1392,6 +1399,11 @@ function ensureActionRow(map, id) {
   return map.get(id);
 }
 
+function matchesSelectedActions(flags, selectedModes, requireAllActions = false) {
+  const modes = selectedModes.length ? selectedModes : ["repost"];
+  return requireAllActions ? modes.every((mode) => flags[mode] === true) : modes.some((mode) => flags[mode] === true);
+}
+
 function parseWallUrl(url) {
   const match = String(url || "").match(/wall(-?\d+)_([0-9]+)/i);
   if (!match) return null;
@@ -1428,6 +1440,10 @@ function hydrateState() {
   syncMinAgeVisibility();
 
   $$('input[type="checkbox"]', els.modeBox).forEach((box) => {
+    if (box.value === "all") {
+      box.checked = Boolean(lastState.requireAllActions || lastState.entryModes?.includes("all"));
+      return;
+    }
     box.checked = lastState.entryModes?.includes(box.value) ?? box.checked;
   });
 
@@ -1638,7 +1654,10 @@ function collectState() {
 
   return {
     postUrl: els.postUrl.value.trim(),
-    entryModes: entryModes.length ? entryModes : ["repost", "comment", "like"],
+    entryModes: entryModes.filter((mode) => mode !== "all").length
+      ? entryModes.filter((mode) => mode !== "all")
+      : ["repost"],
+    requireAllActions: entryModes.includes("all"),
     pinnedPost: els.pinnedPost.checked,
     winnersCount,
     backupWinnersCount,
@@ -1677,13 +1696,12 @@ function recomputeAndRender() {
 function recompute() {
   const state = collectState();
   const participants = state.participantsData || [];
-  const normalizedModes = state.entryModes.includes("all")
-    ? ["repost", "comment", "like"]
-    : state.entryModes.filter((mode) => mode !== "all");
+  const normalizedModes = state.entryModes.filter((mode) => mode !== "all");
   const requiredActions = normalizedModes.length ? normalizedModes : ["repost"];
+  const requireAllActions = Boolean(state.requireAllActions || state.entryModes.includes("all"));
   const evaluated = participants.map((participant, index) => {
     const p = normalizeParticipant(participant, index);
-    const reasons = evaluateParticipant(p, state, requiredActions);
+    const reasons = evaluateParticipant(p, state, requiredActions, requireAllActions);
     return {
       ...p,
       reasons,
@@ -1725,27 +1743,25 @@ function recompute() {
   const reasonCounts = tallyReasons(excluded);
 
   const eligibleIdsStr = eligible.map((p) => String(p.id)).sort().join(",");
-  const integrityPayload = `seed:${currentDrawSeed}|post:${state.postUrl}|modes:${requiredActions.join(',')}|eligible:${eligibleIdsStr}`;
+  const integrityPayload = `seed:${currentDrawSeed}|post:${state.postUrl}|modes:${requiredActions.join(',')}|all:${requireAllActions}|eligible:${eligibleIdsStr}`;
   const integrityHash = sha256Sync(integrityPayload);
 
-  // Участников всего = минимум из сырых счётчиков VK API по каждому условию.
-  // Например: 11 лайков, 9 комментов, 10 репостов → 9.
-  // Это самый точный показатель: VK знает точное кол-во, а загруженные профили могут быть неполными.
   const importMeta = state.importMeta || {};
   let totalParticipants;
-  if (importMeta.sourceCounts && Object.keys(importMeta.sourceCounts).length > 0) {
-    // Берём только счётчики для выбранных режимов
+  const matchedCount = toNum(importMeta.matchedCount);
+  if (matchedCount !== null) {
+    totalParticipants = Math.max(0, matchedCount);
+  } else if (importMeta.sourceCounts && Object.keys(importMeta.sourceCounts).length > 0) {
+    // Legacy imports: use old source totals only when matchedCount is unavailable.
     const relevantCounts = requiredActions
       .map((action) => importMeta.sourceCounts[action])
       .filter(Number.isFinite);
-    totalParticipants = relevantCounts.length > 0
+    totalParticipants = requireAllActions && relevantCounts.length > 0
       ? Math.min(...relevantCounts)
-      : evaluated.filter((item) => requiredActions.every((a) => item.actions?.[a] === true)).length;
+      : evaluated.filter((item) => matchesSelectedActions(item.actions, requiredActions, requireAllActions)).length;
   } else {
     // Если sourceCounts недоступны — считаем из загруженных данных
-    totalParticipants = evaluated.filter((item) =>
-      requiredActions.every((action) => item.actions?.[action] === true)
-    ).length;
+    totalParticipants = evaluated.filter((item) => matchesSelectedActions(item.actions, requiredActions, requireAllActions)).length;
   }
 
   return {
@@ -1760,14 +1776,18 @@ function recompute() {
     reasonCounts,
     totalParticipants,
     requiredActions,
+    requireAllActions,
   };
 }
 
 function getTotalParticipantsCount(result) {
   const meta = result.importMeta || {};
+  if (toNum(meta.matchedCount) !== null) {
+    return Math.max(0, toNum(meta.matchedCount));
+  }
   if (meta.sourceCounts && Object.keys(meta.sourceCounts).length > 0) {
     const minCount = totalFromSourceCounts(meta.sourceCounts, result.participants?.length || 0);
-    return minCount;
+    return result.requireAllActions ? minCount : result.participants?.filter((item) => matchesSelectedActions(item.actions, result.requiredActions || ["repost"], false)).length || 0;
   }
   if (toNum(meta.totalParticipants) > 0) {
     return toNum(meta.totalParticipants);
@@ -1939,7 +1959,7 @@ function parseParticipantLine(line, index) {
   };
 }
 
-function evaluateParticipant(participant, state, requiredActions) {
+function evaluateParticipant(participant, state, requiredActions, requireAllActions = false) {
   const reasons = [];
   const filters = state.filters || {};
 
@@ -1962,7 +1982,11 @@ function evaluateParticipant(participant, state, requiredActions) {
     }
   }
 
-  if (requiredActions.length) {
+  if (requiredActions.length && !requireAllActions) {
+    if (!requiredActions.some((action) => participant.actions?.[action] === true)) {
+      reasons.push("нет ни одного выбранного условия");
+    }
+  } else if (requiredActions.length) {
     for (const action of requiredActions) {
       if (participant.actions?.[action] === true) continue;
       if (participant.actions?.[action] === false) {

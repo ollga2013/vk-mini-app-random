@@ -145,12 +145,13 @@ async function handleRequest(req, res) {
       }
       const postUrl = String(body.postUrl || "").trim();
       const entryModes = Array.isArray(body.entryModes) ? body.entryModes : ["repost"];
+      const requireAllActions = Boolean(body.requireAll || entryModes.includes("all"));
       const scanDepth = clampInt(body.scanDepth, 10, 200, DEFAULT_SCAN_DEPTH);
       const strictPrizeHunter = Boolean(body.strictPrizeHunter);
       const requirePinned = Boolean(body.requirePinned);
       const requestUserToken = String(body.userToken || "").trim();
       const tokens = Array.from(new Set([requestUserToken, USER_TOKEN, SERVICE_TOKEN].filter(Boolean)));
-      const result = await withVkTokens(tokens, () => importParticipants({ postUrl, entryModes, scanDepth, strictPrizeHunter, requirePinned, requestUserToken }));
+      const result = await withVkTokens(tokens, () => importParticipants({ postUrl, entryModes, requireAllActions, scanDepth, strictPrizeHunter, requirePinned, requestUserToken }));
       sendJson(res, 200, result);
       return;
     }
@@ -164,11 +165,12 @@ async function handleRequest(req, res) {
       }
       const postUrl = String(body.postUrl || "").trim();
       const entryModes = Array.isArray(body.entryModes) ? body.entryModes : ["repost"];
+      const requireAllActions = Boolean(body.requireAll || entryModes.includes("all"));
       const scanDepth = clampInt(body.scanDepth, 10, 200, DEFAULT_SCAN_DEPTH);
       const strictPrizeHunter = Boolean(body.strictPrizeHunter);
       const requirePinned = Boolean(body.requirePinned);
       const actionRows = Array.isArray(body.actionRows) ? body.actionRows : [];
-      const result = await enrichParticipants({ postUrl, entryModes, scanDepth, strictPrizeHunter, requirePinned, actionRows });
+      const result = await enrichParticipants({ postUrl, entryModes, requireAllActions, scanDepth, strictPrizeHunter, requirePinned, actionRows });
       sendJson(res, 200, result);
       return;
     }
@@ -251,7 +253,7 @@ async function serveStatic(pathname, res, req) {
   }
 }
 
-async function importParticipants({ postUrl, entryModes, scanDepth, strictPrizeHunter, requirePinned, requestUserToken }) {
+async function importParticipants({ postUrl, entryModes, requireAllActions = false, scanDepth, strictPrizeHunter, requirePinned, requestUserToken }) {
   const parsed = parseWallUrl(postUrl);
   if (!parsed) {
     return { error: "Не удалось распознать ссылку на пост VK." };
@@ -275,6 +277,7 @@ async function importParticipants({ postUrl, entryModes, scanDepth, strictPrizeH
     ownerId,
     postId,
     selectedModes,
+    requireAllActions,
     sourceMaps,
     scanDepth,
     strictPrizeHunter,
@@ -284,7 +287,6 @@ async function importParticipants({ postUrl, entryModes, scanDepth, strictPrizeH
       liveUserTokenUsed: requestUserTokenValid,
       liveUserRepostAccess: requestRepostAccess,
       sourceCounts,
-      totalParticipants: totalFromSourceCounts(sourceCounts, sourceMaps.size),
       note:
         selectedModes.includes("repost") && !hasRepostAccess
           ? "Для репостов нужен живой user token с wall-правами. Сейчас repost-часть недоступна."
@@ -293,7 +295,7 @@ async function importParticipants({ postUrl, entryModes, scanDepth, strictPrizeH
   });
 }
 
-async function enrichParticipants({ postUrl, entryModes, scanDepth, strictPrizeHunter, requirePinned, actionRows }) {
+async function enrichParticipants({ postUrl, entryModes, requireAllActions = false, scanDepth, strictPrizeHunter, requirePinned, actionRows }) {
   const parsed = parseWallUrl(postUrl);
   if (!parsed) {
     return { error: "Не удалось распознать ссылку на пост VK." };
@@ -314,6 +316,7 @@ async function enrichParticipants({ postUrl, entryModes, scanDepth, strictPrizeH
     ownerId: parsed.ownerId,
     postId: parsed.postId,
     selectedModes: normalizeModes(entryModes),
+    requireAllActions,
     sourceMaps,
     scanDepth,
     strictPrizeHunter,
@@ -325,20 +328,24 @@ async function enrichParticipants({ postUrl, entryModes, scanDepth, strictPrizeH
   });
 }
 
-async function buildParticipants({ postUrl, ownerId, postId, selectedModes, sourceMaps, scanDepth, strictPrizeHunter = false, requirePinned = false, meta = {} }) {
+async function buildParticipants({ postUrl, ownerId, postId, selectedModes, requireAllActions = false, sourceMaps, scanDepth, strictPrizeHunter = false, requirePinned = false, meta = {} }) {
   const ids = Array.from(sourceMaps.entries())
-    .filter(([, flags]) => selectedModes.every((mode) => flags[mode]))
+    .filter(([, flags]) => matchesSelectedActions(flags, selectedModes, requireAllActions))
     .map(([id]) => id);
 
   if (!ids.length) {
     return {
       participants: [],
       meta: {
+        ...meta,
         postUrl,
         ownerId,
         postId,
         selectedModes,
+        requireAllActions,
         importedCount: 0,
+        matchedCount: 0,
+        totalParticipants: 0,
         note: "Не найдено участников по выбранным условиям.",
       },
     };
@@ -381,15 +388,18 @@ async function buildParticipants({ postUrl, ownerId, postId, selectedModes, sour
   return {
     participants,
     meta: {
+      ...meta,
       postUrl,
       ownerId,
       postId,
       selectedModes,
+      requireAllActions,
       importedCount: participants.length,
+      matchedCount: ids.length,
+      totalParticipants: ids.length,
       scanDepth,
       strictPrizeHunter,
       serviceTokenUsed: Boolean(SERVICE_TOKEN),
-      ...meta,
     },
   };
 }
@@ -463,6 +473,11 @@ function ensureAction(map, id) {
     map.set(key, { repost: false, comment: false, like: false });
   }
   return map.get(key);
+}
+
+function matchesSelectedActions(flags, selectedModes, requireAllActions = false) {
+  const modes = selectedModes.length ? selectedModes : ["repost"];
+  return requireAllActions ? modes.every((mode) => flags[mode] === true) : modes.some((mode) => flags[mode] === true);
 }
 
 async function fetchReposters(ownerId, postId) {
@@ -971,7 +986,8 @@ function parseWallUrl(url) {
 function normalizeModes(entryModes) {
   const values = new Set((entryModes || []).map((item) => String(item).toLowerCase()));
   if (values.has("all")) return ["repost", "comment", "like"];
-  return ["repost", "comment", "like"].filter((item) => values.has(item));
+  const modes = ["repost", "comment", "like"].filter((item) => values.has(item));
+  return modes.length ? modes : ["repost"];
 }
 
 function clampInt(value, min, max, fallback) {
