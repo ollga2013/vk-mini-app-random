@@ -4,6 +4,7 @@ const DEFAULT_VK_APP_ID = 54620998;
 const VK_IMPORT_SCOPE = "wall,groups";
 const VK_API_VERSION = "5.199";
 const MODE_STATE_VERSION = 2;
+const FILTER_STATE_VERSION = 2;
 const LOCAL_API_HOSTS = new Set(["localhost", "127.0.0.1", ""]);
 const MAX_IMPORT_ITEMS = 50000;
 const MAX_WINNERS = 10000;
@@ -1051,7 +1052,7 @@ async function fetchBridgeWallRepostIds(parsed, userToken, pageSize = 100, maxIt
     if (!items.length) break;
     const pageIds = items
       .map((item) => Number(item.owner_id))
-      .filter((id) => Number.isInteger(id) && id > 0);
+      .filter((id) => Number.isInteger(id) && id !== 0);
     results.push(...pageIds);
     if (items.length < count || (Number.isFinite(total) && offset + items.length >= total)) break;
     offset += items.length;
@@ -1062,38 +1063,66 @@ async function fetchBridgeWallRepostIds(parsed, userToken, pageSize = 100, maxIt
 
 async function getBridgeUsers(ids, userToken) {
   const rows = [];
+  const userIds = ids.filter((id) => Number.isInteger(id) && id > 0);
+  const groupIds = ids.filter((id) => Number.isInteger(id) && id < 0).map((id) => Math.abs(id));
   await runBridgeLimited(
-    chunkItems(ids, 100).map((batch) => async () => {
-      const data = await vkApiCall("users.get", {
-        user_ids: batch.join(","),
-        fields: [
-          "counters",
-          "domain",
-          "photo_50",
-          "photo_100",
-          "photo_200",
-          "has_photo",
-          "can_write_private_message",
-          "about",
-          "status",
-          "is_closed",
-        ].join(","),
-      }, userToken);
+    [
+      ...chunkItems(userIds, 100).map((batch) => async () => {
+        const data = await vkApiCall("users.get", {
+          user_ids: batch.join(","),
+          fields: [
+            "counters",
+            "domain",
+            "photo_50",
+            "photo_100",
+            "photo_200",
+            "has_photo",
+            "can_write_private_message",
+            "about",
+            "status",
+            "is_closed",
+          ].join(","),
+        }, userToken);
 
-      (data || []).forEach((user) => {
-        rows.push({
-          id: Number(user.id),
-          name: `${user.first_name || ""} ${user.last_name || ""}`.trim() || `id${user.id}`,
-          profileUrl: `https://vk.com/${user.domain || `id${user.id}`}`,
-          avatarUrl: user.photo_200 || user.photo_100 || user.photo_50 || "",
-          friends: user.counters && Number.isFinite(user.counters.friends) ? user.counters.friends : null,
-          canWritePm: user.can_write_private_message === 1,
-          hasPhoto: user.has_photo === 1,
-          isPrivate: Boolean(user.is_closed),
-          bioText: [user.about, user.status].filter(Boolean).join(" ").trim(),
+        (data || []).forEach((user) => {
+          rows.push({
+            id: Number(user.id),
+            name: `${user.first_name || ""} ${user.last_name || ""}`.trim() || `id${user.id}`,
+            profileUrl: `https://vk.com/${user.domain || `id${user.id}`}`,
+            avatarUrl: user.photo_200 || user.photo_100 || user.photo_50 || "",
+            friends: user.counters && Number.isFinite(user.counters.friends) ? user.counters.friends : null,
+            canWritePm: user.can_write_private_message === 1,
+            hasPhoto: user.has_photo === 1,
+            isPrivate: Boolean(user.is_closed),
+            isCommunity: false,
+            bioText: [user.about, user.status].filter(Boolean).join(" ").trim(),
+          });
         });
-      });
-    }),
+      }),
+      ...chunkItems(groupIds, 100).map((batch) => async () => {
+        const data = await vkApiCall("groups.getById", {
+          group_ids: batch.join(","),
+          fields: "description,photo_50,photo_100,photo_200,screen_name,is_closed,can_message",
+        }, userToken);
+
+        (data?.groups || data || []).forEach((group) => {
+          const groupId = Number(group.id);
+          if (!Number.isInteger(groupId) || groupId <= 0) return;
+          rows.push({
+            id: -groupId,
+            name: group.name || `club${groupId}`,
+            profileUrl: `https://vk.com/${group.screen_name || `club${groupId}`}`,
+            avatarUrl: group.photo_200 || group.photo_100 || group.photo_50 || "",
+            friends: null,
+            canWritePm: group.can_message === 1,
+            hasPhoto: Boolean(group.photo_200 || group.photo_100 || group.photo_50),
+            isPrivate: group.is_closed === 1,
+            isCommunity: true,
+            bioText: String(group.description || "").trim(),
+          });
+        });
+      }),
+    ],
     BRIDGE_MAX_CONCURRENT,
   );
   return rows;
@@ -1103,8 +1132,10 @@ async function getBridgeMemberMap(groupId, ids, userToken) {
   const result = new Map();
   setApiStatus("Проверяю подписку на сообщество...");
 
+  const memberIds = ids.filter((id) => Number.isInteger(id) && id > 0);
+
   await runBridgeLimited(
-    chunkItems(ids, 500).map((batch) => async () => {
+    chunkItems(memberIds, 500).map((batch) => async () => {
       const data = await safeVkApiCall("groups.isMember", {
         group_id: groupId,
         user_ids: batch.join(","),
@@ -1375,7 +1406,7 @@ async function paginateVkBridgeIdsDetailed(fetchPage, pageSize = 100, maxItems =
     offset += page.length;
     if (page.length < count || (Number.isFinite(total) && offset >= total)) break;
   }
-  const ids = Array.from(new Set(results.filter((id) => Number.isInteger(id) && id > 0))).slice(0, maxItems);
+  const ids = Array.from(new Set(results.filter((id) => Number.isInteger(id) && id !== 0))).slice(0, maxItems);
   return { ids, total: Math.max(ids.length, total || 0), items: results };
 }
 
@@ -1386,7 +1417,7 @@ function extractVkIdsFromPage(page) {
       const fromId = Number(item?.from_id);
       if (Number.isInteger(fromId) && fromId > 0) return fromId;
       const ownerId = Number(item?.owner_id);
-      if (Number.isInteger(ownerId) && ownerId > 0) return ownerId;
+      if (Number.isInteger(ownerId) && ownerId !== 0) return ownerId;
       const id = Number(item?.id);
       return Number.isInteger(id) && id > 0 ? id : null;
     })
@@ -1555,6 +1586,7 @@ function loadState() {
       recentPostUrl: "",
       entryModes: ["repost"],
       modeSelectionVersion: MODE_STATE_VERSION,
+      filterSelectionVersion: FILTER_STATE_VERSION,
       pinnedPost: true,
       winnersCount: 3,
       prizeText: "",
@@ -1563,7 +1595,7 @@ function loadState() {
       filters: {
         requireAvatar: false,
         requireGroupMember: false,
-        excludeCommunities: true,
+        excludeCommunities: false,
         excludePrivate: false,
         strictPrizeHunter: false,
       },
@@ -1582,6 +1614,7 @@ function loadState() {
       recentPostUrl: "",
       entryModes: ["repost"],
       modeSelectionVersion: MODE_STATE_VERSION,
+      filterSelectionVersion: FILTER_STATE_VERSION,
       pinnedPost: true,
       winnersCount: 3,
       prizeText: "",
@@ -1590,7 +1623,7 @@ function loadState() {
       filters: {
         requireAvatar: false,
         requireGroupMember: false,
-        excludeCommunities: true,
+        excludeCommunities: false,
         excludePrivate: false,
         strictPrizeHunter: false,
       },
@@ -1608,7 +1641,12 @@ function migrateState(state) {
   if (next.modeSelectionVersion !== MODE_STATE_VERSION && !next.requireAllActions && legacyDefaultModes) {
     next.entryModes = ["repost"];
   }
+  next.filters = next.filters && typeof next.filters === "object" ? next.filters : {};
+  if (next.filterSelectionVersion !== FILTER_STATE_VERSION) {
+    next.filters.excludeCommunities = false;
+  }
   next.modeSelectionVersion = MODE_STATE_VERSION;
+  next.filterSelectionVersion = FILTER_STATE_VERSION;
   return next;
 }
 
@@ -1673,6 +1711,7 @@ function collectState() {
       : ["repost"],
     requireAllActions: entryModes.includes("all"),
     modeSelectionVersion: MODE_STATE_VERSION,
+    filterSelectionVersion: FILTER_STATE_VERSION,
     pinnedPost: els.pinnedPost.checked,
     winnersCount,
     backupWinnersCount,

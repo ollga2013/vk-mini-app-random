@@ -375,8 +375,8 @@ async function buildParticipants({ postUrl, ownerId, postId, selectedModes, requ
       ageDays: wallSignals.ageDays ?? null,
       wallContestCount: wallSignals.wallContestCount ?? null,
       repostShare: wallSignals.repostShare ?? null,
-      isCommunity: false,
-      isPrivate: wallSignals.isPrivate ?? false,
+      isCommunity: user.isCommunity ?? false,
+      isPrivate: wallSignals.isPrivate ?? user.isPrivate ?? false,
       canWritePm: user.canWritePm ?? null,
       commentText: actionFlags.commentText || "",
       hasPinnedTargetPost: wallSignals.hasPinnedTargetPost ?? null,
@@ -529,7 +529,7 @@ async function fetchWallReposters(ownerId, postId, pageSize = 100, maxItems = MA
     if (items.length < count) break;
     offset += items.length;
   }
-  const ids = uniqPositive(results).slice(0, maxItems);
+  const ids = uniqVkIds(results).slice(0, maxItems);
   return { ids, total: Math.max(ids.length, total || 0) };
 }
 
@@ -581,7 +581,7 @@ function extractRepostOwnerIds(response) {
   const ids = [];
   for (const item of items) {
     const ownerId = Number(item && item.owner_id);
-    if (Number.isInteger(ownerId) && ownerId > 0) {
+    if (Number.isInteger(ownerId) && ownerId !== 0) {
       ids.push(ownerId);
     }
   }
@@ -589,51 +589,83 @@ function extractRepostOwnerIds(response) {
 }
 
 async function getUsers(ids) {
-  const chunks = chunk(ids, 100);
   const rows = [];
+  const userIds = ids.filter((id) => Number.isInteger(id) && id > 0);
+  const groupIds = ids.filter((id) => Number.isInteger(id) && id < 0).map((id) => Math.abs(id));
   await runLimited(
-    chunks.map((batch) => async () => {
-      const data = await vkCall("users.get", {
-        user_ids: batch.join(","),
-        fields: [
-          "counters",
-          "photo_id",
-          "has_photo",
-          "screen_name",
-          "domain",
-          "photo_50",
-          "photo_100",
-          "photo_200",
-          "bdate",
-          "about",
-          "status",
-          "can_see_all_posts",
-          "can_write_private_message",
-          "is_closed",
-        ].join(","),
-      });
-
-      (data || []).forEach((u) => {
-        rows.push({
-          id: u.id,
-          name: `${u.first_name || ""} ${u.last_name || ""}`.trim() || `id${u.id}`,
-          profileUrl: `https://vk.com/${u.domain || `id${u.id}`}`,
-          avatarUrl: u.photo_200 || u.photo_100 || u.photo_50 || "",
-          friends: u.counters && Number.isFinite(u.counters.friends) ? u.counters.friends : null,
-          canWritePm: u.can_write_private_message === 1,
-          bioText: [u.about, u.status].filter(Boolean).join(" ").trim(),
+    [
+      ...chunk(userIds, 100).map((batch) => async () => {
+        const data = await vkCall("users.get", {
+          user_ids: batch.join(","),
+          fields: [
+            "counters",
+            "photo_id",
+            "has_photo",
+            "screen_name",
+            "domain",
+            "photo_50",
+            "photo_100",
+            "photo_200",
+            "bdate",
+            "about",
+            "status",
+            "can_see_all_posts",
+            "can_write_private_message",
+            "is_closed",
+          ].join(","),
         });
-      });
-    }),
+
+        (data || []).forEach((u) => {
+          rows.push({
+            id: u.id,
+            name: `${u.first_name || ""} ${u.last_name || ""}`.trim() || `id${u.id}`,
+            profileUrl: `https://vk.com/${u.domain || `id${u.id}`}`,
+            avatarUrl: u.photo_200 || u.photo_100 || u.photo_50 || "",
+            friends: u.counters && Number.isFinite(u.counters.friends) ? u.counters.friends : null,
+            canWritePm: u.can_write_private_message === 1,
+            isCommunity: false,
+            isPrivate: u.is_closed === 1,
+            bioText: [u.about, u.status].filter(Boolean).join(" ").trim(),
+          });
+        });
+      }),
+      ...chunk(groupIds, 100).map((batch) => async () => {
+        const data = await vkCall("groups.getById", {
+          group_ids: batch.join(","),
+          fields: "description,photo_50,photo_100,photo_200,screen_name,is_closed,can_message",
+        });
+
+        (data?.groups || data || []).forEach((group) => {
+          const groupId = Number(group.id);
+          if (!Number.isInteger(groupId) || groupId <= 0) return;
+          rows.push({
+            id: -groupId,
+            name: group.name || `club${groupId}`,
+            profileUrl: `https://vk.com/${group.screen_name || `club${groupId}`}`,
+            avatarUrl: group.photo_200 || group.photo_100 || group.photo_50 || "",
+            friends: null,
+            canWritePm: group.can_message === 1,
+            isCommunity: true,
+            isPrivate: group.is_closed === 1,
+            bioText: String(group.description || "").trim(),
+          });
+        });
+      }),
+    ],
     MAX_CONCURRENT,
   );
   return rows;
 }
 
+function uniqVkIds(items) {
+  return Array.from(new Set(items.filter((id) => Number.isInteger(id) && id !== 0)));
+}
+
 async function getMemberMap(groupId, ids) {
   const result = new Map();
+  const memberIds = ids.filter((id) => Number.isInteger(id) && id > 0);
   await runLimited(
-    chunk(ids, 500).map((batch) => async () => {
+    chunk(memberIds, 500).map((batch) => async () => {
       let data = null;
       for (let attempt = 0; attempt < 3; attempt += 1) {
         try {
