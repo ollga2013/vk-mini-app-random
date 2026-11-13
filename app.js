@@ -555,6 +555,16 @@ function handleModeChange(event) {
     allBox.checked = false;
   }
   persistAndRefresh();
+  scheduleImportForModeChange();
+}
+
+function scheduleImportForModeChange() {
+  if (!els.postUrl.value.trim() || (!importedParticipants && !importedMeta)) return;
+  clearTimeout(autoImportTimer);
+  setApiStatus("Обновляю список под новые условия...");
+  autoImportTimer = setTimeout(() => {
+    importFromVkFresh();
+  }, 250);
 }
 
 function persistAndRefresh() {
