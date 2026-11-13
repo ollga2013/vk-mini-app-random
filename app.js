@@ -3,6 +3,7 @@ const META_KEY = "vk-winner-mini-app:meta";
 const DEFAULT_VK_APP_ID = 54620998;
 const VK_IMPORT_SCOPE = "wall,groups";
 const VK_API_VERSION = "5.199";
+const MODE_STATE_VERSION = 2;
 const LOCAL_API_HOSTS = new Set(["localhost", "127.0.0.1", ""]);
 const MAX_IMPORT_ITEMS = 50000;
 const MAX_WINNERS = 10000;
@@ -1552,7 +1553,8 @@ function loadState() {
     return {
       postUrl: "",
       recentPostUrl: "",
-      entryModes: ["repost", "comment", "like"],
+      entryModes: ["repost"],
+      modeSelectionVersion: MODE_STATE_VERSION,
       pinnedPost: true,
       winnersCount: 3,
       prizeText: "",
@@ -1572,13 +1574,14 @@ function loadState() {
   }
 
   try {
-    return JSON.parse(raw);
+    return migrateState(JSON.parse(raw));
   } catch {
     localStorage.removeItem(STORAGE_KEY);
     return {
       postUrl: "",
       recentPostUrl: "",
-      entryModes: ["repost", "comment", "like"],
+      entryModes: ["repost"],
+      modeSelectionVersion: MODE_STATE_VERSION,
       pinnedPost: true,
       winnersCount: 3,
       prizeText: "",
@@ -1596,6 +1599,17 @@ function loadState() {
       excludedWinnersText: "",
     };
   }
+}
+
+function migrateState(state) {
+  const next = state && typeof state === "object" ? state : {};
+  const modes = Array.isArray(next.entryModes) ? next.entryModes.filter((mode) => mode !== "all") : [];
+  const legacyDefaultModes = modes.length === 3 && ["repost", "comment", "like"].every((mode) => modes.includes(mode));
+  if (next.modeSelectionVersion !== MODE_STATE_VERSION && !next.requireAllActions && legacyDefaultModes) {
+    next.entryModes = ["repost"];
+  }
+  next.modeSelectionVersion = MODE_STATE_VERSION;
+  return next;
 }
 
 /**
@@ -1658,6 +1672,7 @@ function collectState() {
       ? entryModes.filter((mode) => mode !== "all")
       : ["repost"],
     requireAllActions: entryModes.includes("all"),
+    modeSelectionVersion: MODE_STATE_VERSION,
     pinnedPost: els.pinnedPost.checked,
     winnersCount,
     backupWinnersCount,
@@ -1747,11 +1762,12 @@ function recompute() {
   const integrityHash = sha256Sync(integrityPayload);
 
   const importMeta = state.importMeta || {};
+  const importMatchesSelection = importMetaMatchesSelection(importMeta, requiredActions, requireAllActions);
   let totalParticipants;
-  const matchedCount = toNum(importMeta.matchedCount);
+  const matchedCount = importMatchesSelection ? toNum(importMeta.matchedCount) : null;
   if (matchedCount !== null) {
     totalParticipants = Math.max(0, matchedCount);
-  } else if (importMeta.sourceCounts && Object.keys(importMeta.sourceCounts).length > 0) {
+  } else if (importMatchesSelection && importMeta.sourceCounts && Object.keys(importMeta.sourceCounts).length > 0) {
     // Legacy imports: use old source totals only when matchedCount is unavailable.
     const relevantCounts = requiredActions
       .map((action) => importMeta.sourceCounts[action])
@@ -1782,10 +1798,10 @@ function recompute() {
 
 function getTotalParticipantsCount(result) {
   const meta = result.importMeta || {};
-  if (toNum(meta.matchedCount) !== null) {
+  if (importMetaMatchesSelection(meta, result.requiredActions || ["repost"], Boolean(result.requireAllActions)) && toNum(meta.matchedCount) !== null) {
     return Math.max(0, toNum(meta.matchedCount));
   }
-  if (meta.sourceCounts && Object.keys(meta.sourceCounts).length > 0) {
+  if (importMetaMatchesSelection(meta, result.requiredActions || ["repost"], Boolean(result.requireAllActions)) && meta.sourceCounts && Object.keys(meta.sourceCounts).length > 0) {
     const minCount = totalFromSourceCounts(meta.sourceCounts, result.participants?.length || 0);
     return result.requireAllActions ? minCount : result.participants?.filter((item) => matchesSelectedActions(item.actions, result.requiredActions || ["repost"], false)).length || 0;
   }
@@ -1793,6 +1809,14 @@ function getTotalParticipantsCount(result) {
     return toNum(meta.totalParticipants);
   }
   return result.participants?.length || 0;
+}
+
+function importMetaMatchesSelection(meta, requiredActions, requireAllActions) {
+  if (!Array.isArray(meta?.selectedModes)) return false;
+  const expected = [...new Set(requiredActions)].sort();
+  const actual = [...new Set(meta.selectedModes.filter((mode) => mode !== "all"))].sort();
+  const metaRequiresAll = Boolean(meta.requireAllActions || meta.selectedModes.includes("all"));
+  return metaRequiresAll === requireAllActions && expected.length === actual.length && expected.every((mode, index) => mode === actual[index]);
 }
 
 function totalFromSourceCounts(sourceCounts, fallback) {
