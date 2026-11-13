@@ -325,15 +325,10 @@ async function enrichParticipants({ postUrl, entryModes, scanDepth, strictPrizeH
   });
 }
 
-<<<<<<< HEAD
-async function buildParticipants({ postUrl, ownerId, postId, selectedModes, sourceMaps, scanDepth, meta = {} }) {
-  const ids = Array.from(sourceMaps.entries())
-    .filter(([id, flags]) => selectedModes.every((mode) => flags[mode]))
-    .map(([id]) => id);
-=======
 async function buildParticipants({ postUrl, ownerId, postId, selectedModes, sourceMaps, scanDepth, strictPrizeHunter = false, requirePinned = false, meta = {} }) {
-  const ids = Array.from(sourceMaps.keys());
->>>>>>> 407d61b3652e148d0af46b4ff79504b9c8c23a95
+  const ids = Array.from(sourceMaps.entries())
+    .filter(([, flags]) => selectedModes.every((mode) => flags[mode]))
+    .map(([id]) => id);
 
   if (!ids.length) {
     return {

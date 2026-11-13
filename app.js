@@ -4,12 +4,9 @@ const DEFAULT_VK_APP_ID = 54620998;
 const VK_IMPORT_SCOPE = "wall,groups";
 const VK_API_VERSION = "5.199";
 const LOCAL_API_HOSTS = new Set(["localhost", "127.0.0.1", ""]);
-<<<<<<< HEAD
-=======
 const MAX_IMPORT_ITEMS = 50000;
 const MAX_WINNERS = 10000;
 const BRIDGE_MAX_CONCURRENT = 4;
->>>>>>> 407d61b3652e148d0af46b4ff79504b9c8c23a95
 const BRIDGE_CONTEST_KEYS = [
   "конкурс",
   "розыгрыш",
@@ -315,17 +312,10 @@ initBridge();
 bindEvents();
 hydrateState();
 recomputeAndRender();
-<<<<<<< HEAD
-if (canUseLocalApi()) {
-  checkImportServer();
-} else {
-  setApiStatus("VK Bridge готов. Открой приложение внутри VK и нажми «Подвести итоги».");
-=======
 if (canUseBackendApi()) {
   checkImportServer();
 } else {
   setApiStatus(isVkLaunchContext() ? "Нажми «Подвести итоги»." : "Открой приложение внутри VK, чтобы запросить доступ к стене.");
->>>>>>> 407d61b3652e148d0af46b4ff79504b9c8c23a95
 }
 
 function initBridge() {
@@ -593,21 +583,12 @@ function scheduleAutoImport(delay = 700) {
 }
 
 async function checkImportServer(silent = false) {
-<<<<<<< HEAD
-  if (!canUseLocalApi()) {
-    importServerOk = false;
-    setApiStatus("Опубликованная версия работает через VK Bridge, без /api на GitHub Pages.");
-    return { ready: false, skipped: true };
-  }
-  setApiStatus("Проверяю proxy...");
-=======
   if (!canUseBackendApi()) {
     importServerOk = false;
     setApiStatus(isVkLaunchContext() ? "Нажми «Подвести итоги»." : "Открой приложение внутри VK, чтобы запросить доступ к стене.");
     return { ready: false, skipped: true };
   }
   setApiStatus("Проверяю доступ...");
->>>>>>> 407d61b3652e148d0af46b4ff79504b9c8c23a95
   try {
     const response = await fetch(apiUrl("/api/status"));
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -791,19 +772,11 @@ function withTimeout(promise, timeoutMs, message) {
 }
 
 async function importFromServer(state, userToken) {
-<<<<<<< HEAD
-  if (!canUseLocalApi()) {
-    throw new Error("Backend /api недоступен на GitHub Pages. Открой приложение внутри VK, чтобы импорт шел через VK Bridge.");
-  }
-
-  const response = await fetch("/api/import", {
-=======
   if (!canUseBackendApi()) {
     throw new Error("Backend /api недоступен на GitHub Pages. Открой приложение внутри VK, чтобы импорт шел через VK Bridge.");
   }
 
   const response = await fetch(apiUrl("/api/import"), {
->>>>>>> 407d61b3652e148d0af46b4ff79504b9c8c23a95
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -956,7 +929,9 @@ function rewriteApiImageUrls(payload) {
 }
 
 async function buildBridgeImportPayload({ state, parsed, actionMap, selectedModes, sourceCounts = {}, userToken }) {
-  const ids = Array.from(actionMap.keys());
+  const ids = Array.from(actionMap.entries())
+    .filter(([, flags]) => selectedModes.every((mode) => flags[mode]))
+    .map(([id]) => id);
   if (!ids.length) {
     return {
       participants: [],
@@ -1097,124 +1072,6 @@ async function getBridgeUsers(ids, userToken) {
         ].join(","),
       }, userToken);
 
-<<<<<<< HEAD
-  if (modes.includes("like")) {
-    const ids = await paginateVkBridgeIds((offset, count) =>
-      vkApiCall("likes.getList", {
-        type: "post",
-        owner_id: parsed.ownerId,
-        item_id: parsed.postId,
-        filter: "likes",
-        count,
-        offset,
-      }, userToken),
-    );
-    ids.forEach((id) => ensureActionRow(actionMap, id).like = true);
-  }
-
-  return buildBridgeImportPayload({
-    state,
-    parsed,
-    actionMap,
-    selectedModes: modes,
-    userToken,
-  });
-}
-
-function canUseLocalApi() {
-  return LOCAL_API_HOSTS.has(window.location.hostname);
-}
-
-async function buildBridgeImportPayload({ state, parsed, actionMap, selectedModes, userToken }) {
-  const ids = Array.from(actionMap.entries())
-    .filter(([id, flags]) => selectedModes.every((mode) => flags[mode]))
-    .map(([id]) => id);
-  if (!ids.length) {
-    return {
-      participants: [],
-      meta: {
-        postUrl: state.postUrl,
-        ownerId: parsed.ownerId,
-        postId: parsed.postId,
-        selectedModes,
-        importedCount: 0,
-        clientBridgeImport: true,
-        note: "Участники по выбранным условиям не найдены.",
-      },
-    };
-  }
-
-  setApiStatus(`VK найдено ID: ${ids.length}. Загружаю профили...`);
-  const users = await getBridgeUsers(ids, userToken);
-  const groupId = parsed.ownerId < 0 ? Math.abs(parsed.ownerId) : null;
-  const memberMap = groupId ? await getBridgeMemberMap(groupId, ids, userToken) : new Map();
-  const wallMap = await getBridgeWallSignals(ids, state.importScanDepth, userToken);
-
-  const participants = users.map((user) => {
-    const wallSignals = wallMap.get(user.id) || {};
-    return {
-      id: user.id,
-      name: user.name,
-      profileUrl: user.profileUrl,
-      avatarUrl: user.avatarUrl,
-      actions: actionMap.get(user.id) || { repost: false, comment: false, like: false },
-      member: groupId ? memberMap.get(user.id) ?? null : null,
-      friends: user.friends,
-      ageDays: wallSignals.ageDays ?? null,
-      wallContestCount: wallSignals.wallContestCount ?? null,
-      repostShare: wallSignals.repostShare ?? null,
-      isCommunity: false,
-      isPrivate: wallSignals.isPrivate ?? user.isPrivate ?? false,
-      bioText: user.bioText || "",
-      wallText: wallSignals.wallText || "",
-    };
-  });
-
-  return {
-    participants,
-    meta: {
-      postUrl: state.postUrl,
-      ownerId: parsed.ownerId,
-      postId: parsed.postId,
-      selectedModes,
-      importedCount: participants.length,
-      scanDepth: state.importScanDepth,
-      clientBridgeImport: true,
-      repostImportAvailable: true,
-    },
-  };
-}
-
-async function getBridgeUsers(ids, userToken) {
-  const rows = [];
-  for (const batch of chunkItems(ids, 1000)) {
-    const data = await vkApiCall("users.get", {
-      user_ids: batch.join(","),
-      fields: [
-        "counters",
-        "domain",
-        "photo_50",
-        "photo_100",
-        "photo_200",
-        "about",
-        "status",
-        "is_closed",
-      ].join(","),
-    }, userToken);
-
-    (data || []).forEach((user) => {
-      rows.push({
-        id: Number(user.id),
-        name: `${user.first_name || ""} ${user.last_name || ""}`.trim() || `id${user.id}`,
-        profileUrl: `https://vk.com/${user.domain || `id${user.id}`}`,
-        avatarUrl: user.photo_200 || user.photo_100 || user.photo_50 || "",
-        friends: user.counters && Number.isFinite(user.counters.friends) ? user.counters.friends : null,
-        isPrivate: Boolean(user.is_closed),
-        bioText: [user.about, user.status].filter(Boolean).join(" ").trim(),
-      });
-    });
-  }
-=======
       (data || []).forEach((user) => {
         rows.push({
           id: Number(user.id),
@@ -1231,7 +1088,6 @@ async function getBridgeUsers(ids, userToken) {
     }),
     BRIDGE_MAX_CONCURRENT,
   );
->>>>>>> 407d61b3652e148d0af46b4ff79504b9c8c23a95
   return rows;
 }
 
@@ -1239,30 +1095,6 @@ async function getBridgeMemberMap(groupId, ids, userToken) {
   const result = new Map();
   setApiStatus("Проверяю подписку на сообщество...");
 
-<<<<<<< HEAD
-  for (const batch of chunkItems(ids, 500)) {
-    const data = await safeVkApiCall("groups.isMember", {
-      group_id: groupId,
-      user_ids: batch.join(","),
-    }, userToken);
-
-    if (Array.isArray(data)) {
-      data.forEach((row) => {
-        if (row && row.user_id !== undefined) {
-          result.set(Number(row.user_id), Boolean(Number(row.member)));
-        }
-      });
-    } else {
-      batch.forEach((id) => result.set(Number(id), null));
-    }
-  }
-  return result;
-}
-
-async function getBridgeWallSignals(ids, scanDepth, userToken) {
-  const result = new Map();
-  let done = 0;
-=======
   await runBridgeLimited(
     chunkItems(ids, 500).map((batch) => async () => {
       const data = await safeVkApiCall("groups.isMember", {
@@ -1324,7 +1156,6 @@ async function getBridgeWallSignals(ids, scanDepth, userToken, targetOwnerId, ta
   const result = new Map();
   let done = 0;
   const startedAt = Date.now();
->>>>>>> 407d61b3652e148d0af46b4ff79504b9c8c23a95
 
   await runBridgeLimited(
     ids.map((id) => async () => {
@@ -1334,13 +1165,8 @@ async function getBridgeWallSignals(ids, scanDepth, userToken, targetOwnerId, ta
       }, userToken);
 
       done += 1;
-<<<<<<< HEAD
-      if (done % 50 === 0 || done === ids.length) {
-        setApiStatus(`Проверяю анти-призолов фильтры: ${done}/${ids.length}`);
-=======
       if (done % 10 === 0 || done === ids.length) {
         setApiStatus(`Проверяю стены: ${done}/${ids.length} · осталось примерно ${estimateRemainingTime(startedAt, done, ids.length)}`);
->>>>>>> 407d61b3652e148d0af46b4ff79504b9c8c23a95
       }
 
       if (!wall || !Array.isArray(wall.items)) {
@@ -1353,10 +1179,6 @@ async function getBridgeWallSignals(ids, scanDepth, userToken, targetOwnerId, ta
       let repostCount = 0;
       let contestCount = 0;
       let oldestDate = null;
-<<<<<<< HEAD
-      const wallTexts = [];
-
-=======
       let hasPinnedTargetPost = false;
       const wallTexts = [];
 
@@ -1379,7 +1201,6 @@ async function getBridgeWallSignals(ids, scanDepth, userToken, targetOwnerId, ta
         }
       }
 
->>>>>>> 407d61b3652e148d0af46b4ff79504b9c8c23a95
       for (const post of items) {
         if (Number.isInteger(post.date)) {
           oldestDate = oldestDate === null ? post.date : Math.min(oldestDate, post.date);
@@ -1408,23 +1229,15 @@ async function getBridgeWallSignals(ids, scanDepth, userToken, targetOwnerId, ta
         repostShare: total ? repostCount / total : null,
         ageDays: oldestDate ? Math.max(0, Math.floor((now - oldestDate) / 86400)) : null,
         wallText: wallTexts.join("\n").slice(0, 8000),
-<<<<<<< HEAD
-      });
-    }),
-    3,
-=======
         hasPinnedTargetPost,
       });
     }),
     6,
->>>>>>> 407d61b3652e148d0af46b4ff79504b9c8c23a95
   );
 
   return result;
 }
 
-<<<<<<< HEAD
-=======
 function estimateRemainingTime(startedAt, done, total) {
   if (!done || !total || done >= total) return "00:00";
   const elapsedMs = Date.now() - startedAt;
@@ -1438,8 +1251,6 @@ function formatDuration(ms) {
   const seconds = totalSeconds % 60;
   return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 }
-
->>>>>>> 407d61b3652e148d0af46b4ff79504b9c8c23a95
 async function safeVkApiCall(method, params, userToken) {
   try {
     return await vkApiCall(method, params, userToken);
@@ -1449,19 +1260,6 @@ async function safeVkApiCall(method, params, userToken) {
 }
 
 async function vkApiCall(method, params, userToken) {
-<<<<<<< HEAD
-  const payload = await window.vkBridge.send("VKWebAppCallAPIMethod", {
-    method,
-    params: {
-      ...params,
-      access_token: userToken,
-      v: VK_API_VERSION,
-    },
-  });
-  return payload.response;
-}
-
-=======
   try {
     const payload = await window.vkBridge.send("VKWebAppCallAPIMethod", {
       method,
@@ -1526,8 +1324,6 @@ function sanitizeVkError(value) {
     ]),
   );
 }
-
->>>>>>> 407d61b3652e148d0af46b4ff79504b9c8c23a95
 async function runBridgeLimited(tasks, limit) {
   let index = 0;
   const workers = Array.from({ length: Math.min(limit, tasks.length) }, async () => {
@@ -1553,15 +1349,11 @@ function containsBridgeContestText(text) {
   return BRIDGE_CONTEST_KEYS.some((key) => lower.includes(key));
 }
 
-<<<<<<< HEAD
-async function paginateVkBridgeIds(fetchPage, pageSize = 1000) {
-=======
 async function paginateVkBridgeIds(fetchPage, pageSize = 100, maxItems = MAX_IMPORT_ITEMS) {
   return (await paginateVkBridgeIdsDetailed(fetchPage, pageSize, maxItems)).ids;
 }
 
 async function paginateVkBridgeIdsDetailed(fetchPage, pageSize = 100, maxItems = MAX_IMPORT_ITEMS) {
->>>>>>> 407d61b3652e148d0af46b4ff79504b9c8c23a95
   const results = [];
   let offset = 0;
   let total = null;

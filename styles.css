@@ -302,7 +302,6 @@ textarea {
   background: rgba(255, 255, 255, 0.94);
   color: var(--text);
   padding: 13px 14px;
-  outline: none;
   transition: border-color 0.18s ease, box-shadow 0.18s ease;
 }
 
@@ -314,7 +313,39 @@ textarea {
 input:focus,
 textarea:focus {
   border-color: rgba(38, 128, 235, 0.5);
+}
+
+input:focus-visible,
+textarea:focus-visible {
+  outline: 3px solid rgba(38, 128, 235, 0.55);
+  outline-offset: 2px;
   box-shadow: 0 0 0 4px rgba(38, 128, 235, 0.09);
+}
+
+@media (forced-colors: active) {
+  input:focus-visible,
+  textarea:focus-visible,
+  button:focus-visible,
+  .file-button:focus-within {
+    outline: 2px solid CanvasText;
+    outline-offset: 2px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  button,
+  .file-button,
+  input,
+  textarea {
+    transition: color 0.18s ease, background-color 0.18s ease, border-color 0.18s ease;
+  }
+
+  button:hover,
+  .file-button:hover,
+  button:active,
+  .file-button:active {
+    transform: none;
+  }
 }
 
 .choice-row {

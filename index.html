@@ -20,9 +20,9 @@
           </p>
         </div>
         <div class="topbar-actions">
-          <button class="ghost" id="load-demo" title="Загрузить тестовых участников для проверки работы приложения">Демо</button>
-          <button class="ghost" id="copy-report" title="Скопировать готовый текстовый отчет с упоминаниями победителей в буфер обмена">Скопировать отчет</button>
-          <button class="primary" id="draw-winners" title="Случайно определить победителей среди допущенных участников">Подвести итоги</button>
+          <button class="ghost" id="load-demo" type="button" title="Загрузить тестовых участников для проверки работы приложения">Демо</button>
+          <button class="ghost" id="copy-report" type="button" title="Скопировать готовый текстовый отчет с упоминаниями победителей в буфер обмена">Скопировать отчет</button>
+          <button class="primary" id="draw-winners" type="button" title="Случайно определить победителей среди допущенных участников">Подвести итоги</button>
         </div>
       </header>
 
@@ -47,7 +47,7 @@
               <button class="ghost small" id="clear-post-url" type="button" title="Очистить поле ссылки на пост">Очистить</button>
             </div>
           </label>
-          <span class="subtle status-line" id="vk-api-status">Готово к розыгрышу</span>
+          <span class="subtle status-line" id="vk-api-status" role="status" aria-live="polite" aria-atomic="true">Готово к розыгрышу</span>
 
           <div class="choice-row" id="entry-mode">
             <label class="chip" title="Учитывать только тех, кто сделал репост конкурсной записи"><input type="checkbox" value="repost" checked /> Репост</label>
@@ -282,9 +282,9 @@
       </section>
     </main>
 
-    <canvas id="export-canvas" class="hidden"></canvas>
-    <canvas id="story-canvas" class="hidden"></canvas>
-    <canvas id="confetti-canvas" class="confetti-layer pointer-events-none"></canvas>
+    <canvas id="export-canvas" class="hidden" aria-hidden="true"></canvas>
+    <canvas id="story-canvas" class="hidden" aria-hidden="true"></canvas>
+    <canvas id="confetti-canvas" class="confetti-layer pointer-events-none" aria-hidden="true"></canvas>
 
     <script>
       window.VK_WINNER_API_BASE_URL = "";
