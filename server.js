@@ -2,18 +2,48 @@ const http = require("http");
 const fs = require("fs/promises");
 const fsSync = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 const { URL } = require("url");
 const { AsyncLocalStorage } = require("async_hooks");
+const compression = require("compression");
+const winston = require("winston");
+
+// Setup logger
+const logger = winston.createLogger({
+  level: "info",
+  format: winston.format.combine(
+    winston.format.timestamp(),
+    winston.format.printf(({ timestamp, level, message }) => `${timestamp} [${level}] ${message}`)
+  ),
+  transports: [new winston.transports.Console()],
+});
 
 const ROOT_DIR = __dirname;
 loadEnvFile(path.join(ROOT_DIR, ".env.local"));
 loadEnvFile(path.join(ROOT_DIR, ".env"));
 
+// Validate essential environment variables
+function validateEnv() {
+  const missing = [];
+  if (!process.env.VK_APP_SECRET) missing.push("VK_APP_SECRET");
+  if (!process.env.VK_USER_TOKEN && !process.env.VK_TOKEN && !process.env.VK_SERVICE_TOKEN) {
+    missing.push("VK_USER_TOKEN (or VK_SERVICE_TOKEN)");
+  }
+  if (missing.length) {
+    logger.warn(`Optional env vars not set: ${missing.join(", ")}. Launch check or API calls may be limited.`);
+  }
+}
+
+validateEnv();
+
 const PORT = Number(process.env.PORT || 4173);
 const API_VERSION = process.env.VK_API_VERSION || "5.199";
 const USER_TOKEN = String(process.env.VK_USER_TOKEN || process.env.VK_TOKEN || "").trim();
 const SERVICE_TOKEN = String(process.env.VK_SERVICE_TOKEN || "").trim();
+const APP_SECRET = String(process.env.VK_APP_SECRET || "").trim();
 const DEFAULT_SCAN_DEPTH = clampInt(process.env.VK_IMPORT_SCAN_DEPTH, 10, 200, 60);
+const MAX_IMPORT_ITEMS = clampInt(process.env.VK_IMPORT_MAX_ITEMS, 100, 100000, 50000);
+const LAUNCH_MAX_AGE_SECONDS = clampInt(process.env.VK_LAUNCH_MAX_AGE_SECONDS, 0, 604800, 86400);
 const MAX_CONCURRENT = 6;
 const vkTokenContext = new AsyncLocalStorage();
 let tokenDiagnosticsPromise = null;
@@ -86,12 +116,18 @@ async function handleRequest(req, res) {
   const pathname = decodeURIComponent(requestUrl.pathname);
 
   if (pathname.startsWith("/api/")) {
+    if (req.method === "OPTIONS") {
+      sendOptions(res);
+      return;
+    }
+
     if (pathname === "/api/status" && req.method === "GET") {
       const tokenDiagnostics = await getTokenDiagnostics();
       sendJson(res, 200, {
         ready: Boolean(USER_TOKEN || SERVICE_TOKEN),
         hasUserToken: Boolean(USER_TOKEN),
         hasServiceToken: Boolean(SERVICE_TOKEN),
+        launchAuthRequired: Boolean(APP_SECRET),
         userTokenValid: tokenDiagnostics.userTokenValid,
         serviceTokenValid: tokenDiagnostics.serviceTokenValid,
         repostImportAvailable: tokenDiagnostics.userTokenValid,
@@ -102,56 +138,92 @@ async function handleRequest(req, res) {
 
     if (pathname === "/api/import" && req.method === "POST") {
       const body = await readJson(req);
+      const auth = verifyApiLaunchParams(body.launchParams);
+      if (!auth.ok) {
+        sendJson(res, 403, { error: auth.error });
+        return;
+      }
       const postUrl = String(body.postUrl || "").trim();
       const entryModes = Array.isArray(body.entryModes) ? body.entryModes : ["repost"];
       const scanDepth = clampInt(body.scanDepth, 10, 200, DEFAULT_SCAN_DEPTH);
+      const strictPrizeHunter = Boolean(body.strictPrizeHunter);
+      const requirePinned = Boolean(body.requirePinned);
       const requestUserToken = String(body.userToken || "").trim();
       const tokens = Array.from(new Set([requestUserToken, USER_TOKEN, SERVICE_TOKEN].filter(Boolean)));
-      const result = await withVkTokens(tokens, () => importParticipants({ postUrl, entryModes, scanDepth, requestUserToken }));
+      const result = await withVkTokens(tokens, () => importParticipants({ postUrl, entryModes, scanDepth, strictPrizeHunter, requirePinned, requestUserToken }));
       sendJson(res, 200, result);
       return;
     }
 
     if (pathname === "/api/enrich" && req.method === "POST") {
       const body = await readJson(req);
+      const auth = verifyApiLaunchParams(body.launchParams);
+      if (!auth.ok) {
+        sendJson(res, 403, { error: auth.error });
+        return;
+      }
       const postUrl = String(body.postUrl || "").trim();
       const entryModes = Array.isArray(body.entryModes) ? body.entryModes : ["repost"];
       const scanDepth = clampInt(body.scanDepth, 10, 200, DEFAULT_SCAN_DEPTH);
+      const strictPrizeHunter = Boolean(body.strictPrizeHunter);
+      const requirePinned = Boolean(body.requirePinned);
       const actionRows = Array.isArray(body.actionRows) ? body.actionRows : [];
-      const result = await enrichParticipants({ postUrl, entryModes, scanDepth, actionRows });
+      const result = await enrichParticipants({ postUrl, entryModes, scanDepth, strictPrizeHunter, requirePinned, actionRows });
       sendJson(res, 200, result);
       return;
     }
 
     if (pathname === "/api/image" && req.method === "GET") {
-      const remoteUrl = String(requestUrl.searchParams.get("url") || "").trim();
+      let remoteUrl = String(requestUrl.searchParams.get("url") || "").trim();
+      while (remoteUrl.includes("url=")) {
+        const match = remoteUrl.match(/[?&]url=([^&]+)/);
+        if (match && match[1]) {
+          const decoded = decodeURIComponent(match[1]);
+          if (/^https?:\/\//i.test(decoded)) {
+            remoteUrl = decoded;
+            continue;
+          }
+        }
+        break;
+      }
       if (!isSafeRemoteUrl(remoteUrl)) {
         sendJson(res, 400, { error: "invalid_image_url" });
         return;
       }
-      const response = await fetch(remoteUrl);
-      if (!response.ok) {
-        sendJson(res, response.status, { error: "image_fetch_failed" });
+      try {
+        const response = await fetch(remoteUrl, {
+          headers: {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+          },
+          signal: AbortSignal.timeout(10000),
+        });
+        if (!response.ok) {
+          sendJson(res, response.status, { error: "image_fetch_failed" });
+          return;
+        }
+        const buffer = Buffer.from(await response.arrayBuffer());
+        res.writeHead(200, {
+          "content-type": response.headers.get("content-type") || "image/jpeg",
+          "cache-control": "public, max-age=86400",
+          "access-control-allow-origin": "*",
+        });
+        res.end(buffer);
+        return;
+      } catch (err) {
+        sendJson(res, 502, { error: "image_fetch_failed", message: String(err && err.message ? err.message : err) });
         return;
       }
-      const buffer = Buffer.from(await response.arrayBuffer());
-      res.writeHead(200, {
-        "content-type": response.headers.get("content-type") || "image/jpeg",
-        "cache-control": "public, max-age=3600",
-        "access-control-allow-origin": "*",
-      });
-      res.end(buffer);
-      return;
     }
 
     sendJson(res, 404, { error: "not_found" });
     return;
   }
 
-  await serveStatic(pathname, res);
+  await serveStatic(pathname, res, req);
 }
 
-async function serveStatic(pathname, res) {
+async function serveStatic(pathname, res, req) {
   const rel = pathname === "/" ? "/index.html" : pathname;
   const absolute = path.resolve(ROOT_DIR, "." + rel);
   if (!absolute.startsWith(ROOT_DIR)) {
@@ -160,19 +232,26 @@ async function serveStatic(pathname, res) {
   }
 
   try {
-    const data = await fs.readFile(absolute);
+    let data = await fs.readFile(absolute);
     const ext = path.extname(absolute).toLowerCase();
-    res.writeHead(200, {
+    const headers = {
       "content-type": contentTypeFor(ext),
       "cache-control": "no-cache",
-    });
+    };
+    const acceptEncoding = req.headers["accept-encoding"] || "";
+    if (acceptEncoding.includes("gzip")) {
+      const zlib = require("zlib");
+      data = zlib.gzipSync(data);
+      headers["content-encoding"] = "gzip";
+    }
+    res.writeHead(200, headers);
     res.end(data);
   } catch {
     sendText(res, 404, "Not found");
   }
 }
 
-async function importParticipants({ postUrl, entryModes, scanDepth, requestUserToken }) {
+async function importParticipants({ postUrl, entryModes, scanDepth, strictPrizeHunter, requirePinned, requestUserToken }) {
   const parsed = parseWallUrl(postUrl);
   if (!parsed) {
     return { error: "Не удалось распознать ссылку на пост VK." };
@@ -190,7 +269,7 @@ async function importParticipants({ postUrl, entryModes, scanDepth, requestUserT
     ? await validateRepostAccess(USER_TOKEN, ownerId, postId)
     : envTokenDiagnostics.userTokenValid;
   const hasRepostAccess = requestRepostAccess || envRepostAccess;
-  const sourceMaps = await collectSourceMaps(ownerId, postId, selectedModes);
+  const { sourceMaps, sourceCounts } = await collectSourceMaps(ownerId, postId, selectedModes);
   return buildParticipants({
     postUrl,
     ownerId,
@@ -198,10 +277,14 @@ async function importParticipants({ postUrl, entryModes, scanDepth, requestUserT
     selectedModes,
     sourceMaps,
     scanDepth,
+    strictPrizeHunter,
+    requirePinned,
     meta: {
       repostImportAvailable: hasRepostAccess,
       liveUserTokenUsed: requestUserTokenValid,
       liveUserRepostAccess: requestRepostAccess,
+      sourceCounts,
+      totalParticipants: totalFromSourceCounts(sourceCounts, sourceMaps.size),
       note:
         selectedModes.includes("repost") && !hasRepostAccess
           ? "Для репостов нужен живой user token с wall-правами. Сейчас repost-часть недоступна."
@@ -210,7 +293,7 @@ async function importParticipants({ postUrl, entryModes, scanDepth, requestUserT
   });
 }
 
-async function enrichParticipants({ postUrl, entryModes, scanDepth, actionRows }) {
+async function enrichParticipants({ postUrl, entryModes, scanDepth, strictPrizeHunter, requirePinned, actionRows }) {
   const parsed = parseWallUrl(postUrl);
   if (!parsed) {
     return { error: "Не удалось распознать ссылку на пост VK." };
@@ -233,6 +316,8 @@ async function enrichParticipants({ postUrl, entryModes, scanDepth, actionRows }
     selectedModes: normalizeModes(entryModes),
     sourceMaps,
     scanDepth,
+    strictPrizeHunter,
+    requirePinned,
     meta: {
       clientBridgeImport: true,
       repostImportAvailable: true,
@@ -240,10 +325,15 @@ async function enrichParticipants({ postUrl, entryModes, scanDepth, actionRows }
   });
 }
 
+<<<<<<< HEAD
 async function buildParticipants({ postUrl, ownerId, postId, selectedModes, sourceMaps, scanDepth, meta = {} }) {
   const ids = Array.from(sourceMaps.entries())
     .filter(([id, flags]) => selectedModes.every((mode) => flags[mode]))
     .map(([id]) => id);
+=======
+async function buildParticipants({ postUrl, ownerId, postId, selectedModes, sourceMaps, scanDepth, strictPrizeHunter = false, requirePinned = false, meta = {} }) {
+  const ids = Array.from(sourceMaps.keys());
+>>>>>>> 407d61b3652e148d0af46b4ff79504b9c8c23a95
 
   if (!ids.length) {
     return {
@@ -259,15 +349,19 @@ async function buildParticipants({ postUrl, ownerId, postId, selectedModes, sour
     };
   }
 
-  const users = await getUsers(ids);
   const groupId = ownerId < 0 ? Math.abs(ownerId) : null;
-  const memberMap = groupId ? await getMemberMap(groupId, ids) : new Map();
-  const wallMap = await getWallSignals(ids, scanDepth);
+  // For pinned check, count=5 is enough: VK returns the pinned post first with is_pinned=1
+  const wallScanDepth = strictPrizeHunter ? scanDepth : 5;
+  const [users, memberMap, wallMap] = await Promise.all([
+    getUsers(ids),
+    groupId ? getMemberMap(groupId, ids) : new Map(),
+    (strictPrizeHunter || requirePinned) ? getWallSignals(ids, wallScanDepth, ownerId, postId) : new Map(),
+  ]);
 
   const participants = users.map((user) => {
     const actionFlags = sourceMaps.get(user.id) || { repost: false, comment: false, like: false };
     const wallSignals = wallMap.get(user.id) || {};
-    const photoUrl = user.avatarUrl ? `/api/image?url=${encodeURIComponent(user.avatarUrl)}` : "";
+    const photoUrl = user.avatarUrl || "";
     return {
       id: user.id,
       name: user.name,
@@ -281,6 +375,9 @@ async function buildParticipants({ postUrl, ownerId, postId, selectedModes, sour
       repostShare: wallSignals.repostShare ?? null,
       isCommunity: false,
       isPrivate: wallSignals.isPrivate ?? false,
+      canWritePm: user.canWritePm ?? null,
+      commentText: actionFlags.commentText || "",
+      hasPinnedTargetPost: wallSignals.hasPinnedTargetPost ?? null,
       bioText: user.bioText || "",
       wallText: wallSignals.wallText || "",
     };
@@ -295,6 +392,7 @@ async function buildParticipants({ postUrl, ownerId, postId, selectedModes, sour
       selectedModes,
       importedCount: participants.length,
       scanDepth,
+      strictPrizeHunter,
       serviceTokenUsed: Boolean(SERVICE_TOKEN),
       ...meta,
     },
@@ -303,12 +401,28 @@ async function buildParticipants({ postUrl, ownerId, postId, selectedModes, sour
 
 async function collectSourceMaps(ownerId, postId, selectedModes) {
   const map = new Map();
+  const sourceCounts = {};
   const tasks = [];
+
+  let officialCounts = { repost: 0, comment: 0, like: 0 };
+  try {
+    const postData = await vkCall("wall.getById", { posts: `${ownerId}_${postId}` });
+    const posts = postData?.items || postData;
+    if (posts && posts[0]) {
+      const post = posts[0];
+      officialCounts.repost = post.reposts?.count ?? 0;
+      officialCounts.comment = post.comments?.count ?? 0;
+      officialCounts.like = post.likes?.count ?? 0;
+    }
+  } catch (e) {
+    console.error("Failed to fetch official post counts via wall.getById", e);
+  }
 
   if (selectedModes.includes("repost")) {
     tasks.push(async () => {
-      const ids = await fetchReposters(ownerId, postId);
-      ids.forEach((id) => {
+      const data = await fetchReposters(ownerId, postId);
+      sourceCounts.repost = Math.max(data.total, officialCounts.repost);
+      data.ids.forEach((id) => {
         const entry = ensureAction(map, id);
         entry.repost = true;
       });
@@ -317,18 +431,21 @@ async function collectSourceMaps(ownerId, postId, selectedModes) {
 
   if (selectedModes.includes("comment")) {
     tasks.push(async () => {
-      const ids = await fetchCommenters(ownerId, postId);
-      ids.forEach((id) => {
+      const data = await fetchCommenters(ownerId, postId);
+      sourceCounts.comment = Math.max(data.total, officialCounts.comment);
+      data.ids.forEach((id) => {
         const entry = ensureAction(map, id);
         entry.comment = true;
+        if (data.commentTexts && data.commentTexts[id]) entry.commentText = data.commentTexts[id];
       });
     });
   }
 
   if (selectedModes.includes("like")) {
     tasks.push(async () => {
-      const ids = await fetchLikers(ownerId, postId);
-      ids.forEach((id) => {
+      const data = await fetchLikers(ownerId, postId);
+      sourceCounts.like = Math.max(data.total, officialCounts.like);
+      data.ids.forEach((id) => {
         const entry = ensureAction(map, id);
         entry.like = true;
       });
@@ -336,7 +453,13 @@ async function collectSourceMaps(ownerId, postId, selectedModes) {
   }
 
   await runLimited(tasks, MAX_CONCURRENT);
-  return map;
+  return { sourceMaps: map, sourceCounts };
+}
+
+function totalFromSourceCounts(sourceCounts, fallback) {
+  const counts = Object.values(sourceCounts || {}).filter(Number.isFinite);
+  if (counts.length === 0) return fallback;
+  return Math.min(...counts);
 }
 
 function ensureAction(map, id) {
@@ -349,22 +472,16 @@ function ensureAction(map, id) {
 
 async function fetchReposters(ownerId, postId) {
   const ids = new Set();
+  const totals = [];
 
   try {
-    const repostIds = await paginateIds(async (offset, count) => {
-      const data = await vkCall("wall.getReposts", {
-        owner_id: ownerId,
-        post_id: postId,
-        count,
-        offset,
-      });
-      return extractRepostOwnerIds(data);
-    });
-    repostIds.forEach((id) => ids.add(id));
+    const repostData = await fetchWallReposters(ownerId, postId);
+    totals.push(repostData.total);
+    repostData.ids.forEach((id) => ids.add(id));
   } catch {}
 
   try {
-    const copyIds = await paginateIds(async (offset, count) => {
+    const copyData = await paginateIdsDetailed(async (offset, count) => {
       const data = await vkCall("likes.getList", {
         type: "post",
         owner_id: ownerId,
@@ -373,16 +490,41 @@ async function fetchReposters(ownerId, postId) {
         count,
         offset,
       });
-      return data.items || [];
-    });
-    copyIds.forEach((id) => ids.add(id));
+      return data;
+    }, 100, MAX_IMPORT_ITEMS);
+    totals.push(copyData.total);
+    copyData.ids.forEach((id) => ids.add(id));
   } catch {}
 
-  return Array.from(ids);
+  const list = Array.from(ids);
+  return { ids: list, total: Math.max(list.length, ...totals.filter(Number.isFinite)) };
+}
+
+async function fetchWallReposters(ownerId, postId, pageSize = 100, maxItems = MAX_IMPORT_ITEMS) {
+  const results = [];
+  let offset = 0;
+  let total = null;
+  while (results.length < maxItems) {
+    const count = Math.min(pageSize, maxItems - results.length);
+    const data = await vkCall("wall.getReposts", {
+      owner_id: ownerId,
+      post_id: postId,
+      count,
+      offset,
+    });
+    if (Number.isFinite(data?.count)) total = data.count;
+    const items = Array.isArray(data?.items) ? data.items : [];
+    if (!items.length) break;
+    results.push(...extractRepostOwnerIds({ items }));
+    if (items.length < count) break;
+    offset += items.length;
+  }
+  const ids = uniqPositive(results).slice(0, maxItems);
+  return { ids, total: Math.max(ids.length, total || 0) };
 }
 
 async function fetchLikers(ownerId, postId) {
-  return paginateIds(async (offset, count) => {
+  return paginateIdsDetailed(async (offset, count) => {
     const data = await vkCall("likes.getList", {
       type: "post",
       owner_id: ownerId,
@@ -391,15 +533,17 @@ async function fetchLikers(ownerId, postId) {
       count,
       offset,
     });
-    return data.items || [];
-  });
+    return data;
+  }, 100, MAX_IMPORT_ITEMS);
 }
 
 async function fetchCommenters(ownerId, postId) {
   const results = [];
+  const commentTexts = {};
   let offset = 0;
   const count = 100;
-  while (true) {
+  let total = null;
+  while (offset < MAX_IMPORT_ITEMS) {
     const data = await vkCall("wall.getComments", {
       owner_id: ownerId,
       post_id: postId,
@@ -407,16 +551,19 @@ async function fetchCommenters(ownerId, postId) {
       offset,
       sort: "desc",
     });
+    if (Number.isFinite(data.count)) total = data.count;
     const items = data.items || [];
-    results.push(
-      ...items
-        .map((comment) => comment.from_id)
-        .filter((id) => Number.isInteger(id) && id > 0),
-    );
-    if (items.length < count) break;
+    items.forEach((c) => {
+      if (Number.isInteger(c.from_id) && c.from_id > 0) {
+        results.push(c.from_id);
+        if (c.text && !commentTexts[c.from_id]) commentTexts[c.from_id] = String(c.text);
+      }
+    });
+    if (items.length < count || (Number.isFinite(data.count) && offset + items.length >= data.count)) break;
     offset += count;
   }
-  return uniqPositive(results);
+  const ids = uniqPositive(results).slice(0, MAX_IMPORT_ITEMS);
+  return { ids, total: Math.max(ids.length, total || 0), commentTexts };
 }
 
 function extractRepostOwnerIds(response) {
@@ -432,80 +579,120 @@ function extractRepostOwnerIds(response) {
 }
 
 async function getUsers(ids) {
-  const chunks = chunk(ids, 1000);
+  const chunks = chunk(ids, 100);
   const rows = [];
-  for (const batch of chunks) {
-    const data = await vkCall("users.get", {
-      user_ids: batch.join(","),
-      fields: [
-        "counters",
-        "photo_id",
-        "has_photo",
-        "screen_name",
-        "domain",
-        "photo_50",
-        "photo_100",
-        "photo_200",
-        "bdate",
-        "about",
-        "status",
-        "can_see_all_posts",
-        "is_closed",
-      ].join(","),
-    });
-
-    (data || []).forEach((u) => {
-      rows.push({
-        id: u.id,
-        name: `${u.first_name || ""} ${u.last_name || ""}`.trim() || `id${u.id}`,
-        profileUrl: `https://vk.com/${u.domain || `id${u.id}`}`,
-        avatarUrl: u.photo_200 || u.photo_100 || u.photo_50 || "",
-        friends: u.counters && Number.isFinite(u.counters.friends) ? u.counters.friends : null,
-        bioText: [u.about, u.status].filter(Boolean).join(" ").trim(),
+  await runLimited(
+    chunks.map((batch) => async () => {
+      const data = await vkCall("users.get", {
+        user_ids: batch.join(","),
+        fields: [
+          "counters",
+          "photo_id",
+          "has_photo",
+          "screen_name",
+          "domain",
+          "photo_50",
+          "photo_100",
+          "photo_200",
+          "bdate",
+          "about",
+          "status",
+          "can_see_all_posts",
+          "can_write_private_message",
+          "is_closed",
+        ].join(","),
       });
-    });
-  }
+
+      (data || []).forEach((u) => {
+        rows.push({
+          id: u.id,
+          name: `${u.first_name || ""} ${u.last_name || ""}`.trim() || `id${u.id}`,
+          profileUrl: `https://vk.com/${u.domain || `id${u.id}`}`,
+          avatarUrl: u.photo_200 || u.photo_100 || u.photo_50 || "",
+          friends: u.counters && Number.isFinite(u.counters.friends) ? u.counters.friends : null,
+          canWritePm: u.can_write_private_message === 1,
+          bioText: [u.about, u.status].filter(Boolean).join(" ").trim(),
+        });
+      });
+    }),
+    MAX_CONCURRENT,
+  );
   return rows;
 }
 
 async function getMemberMap(groupId, ids) {
   const result = new Map();
-  for (const batch of chunk(ids, 500)) {
-    let data = null;
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      try {
-        data = await vkCall("groups.isMember", {
-          group_id: groupId,
-          user_ids: batch.join(","),
-        });
-        break;
-      } catch (error) {
-        const message = String(error && error.message ? error.message : error);
-        if (!message.includes("Too many requests per second") || attempt === 2) {
-          data = null;
+  await runLimited(
+    chunk(ids, 500).map((batch) => async () => {
+      let data = null;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        try {
+          data = await vkCall("groups.isMember", {
+            group_id: groupId,
+            user_ids: batch.join(","),
+          });
           break;
+        } catch (error) {
+          const message = String(error && error.message ? error.message : error);
+          if (!message.includes("Too many requests per second") || attempt === 2) {
+            data = null;
+            break;
+          }
+          await sleep(250 * (attempt + 1));
         }
-        await sleep(250 * (attempt + 1));
       }
-    }
 
-    if (Array.isArray(data)) {
-      data.forEach((row) => {
-        if (!row || row.user_id === undefined) return;
-        result.set(Number(row.user_id), Boolean(Number(row.member)));
-      });
-    } else if (typeof data === "object" && data !== null && "member" in data) {
-      batch.forEach((id) => result.set(Number(id), Boolean(Number(data.member))));
-    } else if (data !== null && data !== undefined) {
-      batch.forEach((id) => result.set(Number(id), Boolean(data)));
-    } else {
-      batch.forEach((id) => result.set(Number(id), null));
-    }
-  }
+      if (Array.isArray(data)) {
+        data.forEach((row) => {
+          if (!row || row.user_id === undefined) return;
+          result.set(Number(row.user_id), Boolean(Number(row.member)));
+        });
+      } else if (typeof data === "object" && data !== null && "member" in data) {
+        batch.forEach((id) => result.set(Number(id), Boolean(Number(data.member))));
+      } else if (data !== null && data !== undefined) {
+        batch.forEach((id) => result.set(Number(id), Boolean(data)));
+      } else {
+        batch.forEach((id) => result.set(Number(id), null));
+      }
+    }),
+    MAX_CONCURRENT,
+  );
   return result;
 }
 
-async function getWallSignals(ids, scanDepth) {
+/**
+ * Recursively searches copy_history (and nested copy_history entries) for a post
+ * that matches the given targetOwnerId + targetPostId.
+ * VK sometimes nests reposts, so we go deeper.
+ */
+function copyHistoryContainsTarget(copyHistory, targetOwnerId, targetPostId) {
+  if (!Array.isArray(copyHistory)) return false;
+  for (const copy of copyHistory) {
+    const oid = Number(copy.owner_id);
+    // VK uses both 'id' and 'post_id' in copy_history entries depending on context
+    const pid = Number(copy.id ?? copy.post_id);
+    if (oid === Number(targetOwnerId) && pid === Number(targetPostId)) return true;
+    if (Array.isArray(copy.copy_history) && copy.copy_history.length > 0) {
+      if (copyHistoryContainsTarget(copy.copy_history, targetOwnerId, targetPostId)) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Returns true if the given wall post is a repost of the target contest post.
+ * Checks copy_history recursively and falls back to text link pattern.
+ */
+function postIsRepostOfTarget(post, targetOwnerId, targetPostId) {
+  if (targetOwnerId === undefined || targetPostId === undefined) return false;
+  if (Array.isArray(post.copy_history) && post.copy_history.length > 0) {
+    if (copyHistoryContainsTarget(post.copy_history, targetOwnerId, targetPostId)) return true;
+  }
+  if (String(post.text || "").includes(`${targetOwnerId}_${targetPostId}`)) return true;
+  return false;
+}
+
+async function getWallSignals(ids, scanDepth, targetOwnerId, targetPostId) {
   const result = new Map();
   await runLimited(
     ids.map((id) => async () => {
@@ -525,12 +712,33 @@ async function getWallSignals(ids, scanDepth) {
       let contestCount = 0;
       let spamHitCount = 0;
       let oldestDate = null;
+      let hasPinnedTargetPost = false;
       const wallTexts = [];
+
+      // Separate pinned post from regular posts
+      const pinnedPost = items.find((p) => p.is_pinned === 1);
+      // The first non-pinned post (topmost regular post)
+      const firstRegularPost = items.find((p) => p.is_pinned !== 1);
+
+      if (targetOwnerId !== undefined && targetPostId !== undefined) {
+        // PRIMARY: check if the pinned post is a repost of the contest post
+        if (pinnedPost && postIsRepostOfTarget(pinnedPost, targetOwnerId, targetPostId)) {
+          hasPinnedTargetPost = true;
+        }
+        // SECONDARY: if there is NO pinned post at all, check if the topmost
+        // regular post is a repost of the contest (user kept it at top manually)
+        if (!hasPinnedTargetPost && !pinnedPost && firstRegularPost) {
+          if (postIsRepostOfTarget(firstRegularPost, targetOwnerId, targetPostId)) {
+            hasPinnedTargetPost = true;
+          }
+        }
+      }
 
       for (const post of items) {
         if (Number.isInteger(post.date)) {
           oldestDate = oldestDate === null ? post.date : Math.min(oldestDate, post.date);
         }
+
         const text = String(post.text || "").toLowerCase();
         wallTexts.push(String(post.text || ""));
         if (Array.isArray(post.copy_history) && post.copy_history.length) {
@@ -557,6 +765,7 @@ async function getWallSignals(ids, scanDepth) {
         ageDays,
         wallText: wallTexts.join("\n").slice(0, 8000),
         spamHitCount,
+        hasPinnedTargetPost,
       });
     }),
     MAX_CONCURRENT,
@@ -575,18 +784,26 @@ function containsAny(text, keywords) {
   return keywords.some((keyword) => text.includes(keyword));
 }
 
-async function paginateIds(fetchPage) {
+async function paginateIds(fetchPage, pageSize = 100, maxItems = MAX_IMPORT_ITEMS) {
+  return (await paginateIdsDetailed(fetchPage, pageSize, maxItems)).ids;
+}
+
+async function paginateIdsDetailed(fetchPage, pageSize = 100, maxItems = MAX_IMPORT_ITEMS) {
   const results = [];
   let offset = 0;
-  const count = 1000;
-  while (true) {
-    const page = await fetchPage(offset, count);
+  let total = null;
+  while (offset < maxItems) {
+    const count = Math.min(pageSize, maxItems - offset);
+    const data = await fetchPage(offset, count);
+    if (Number.isFinite(data?.count)) total = data.count;
+    const page = Array.isArray(data) ? data : data?.items || [];
     if (!page.length) break;
     results.push(...page);
-    if (page.length < count) break;
-    offset += count;
+    if (page.length < count || (Number.isFinite(total) && offset + page.length >= total)) break;
+    offset += page.length;
   }
-  return uniqPositive(results);
+  const ids = uniqPositive(results).slice(0, maxItems);
+  return { ids, total: Math.max(ids.length, total || 0) };
 }
 
 function uniqPositive(items) {
@@ -703,6 +920,52 @@ async function readJson(req) {
   }
 }
 
+function verifyApiLaunchParams(rawLaunchParams) {
+  if (!APP_SECRET) return { ok: true };
+
+  const params = parseLaunchParams(rawLaunchParams);
+  const sign = params.get("sign");
+  if (!sign) return { ok: false, error: "vk_launch_params_required" };
+
+  if (LAUNCH_MAX_AGE_SECONDS > 0) {
+    const ts = Number(params.get("vk_ts"));
+    const now = Math.floor(Date.now() / 1000);
+    if (!Number.isFinite(ts) || now - ts > LAUNCH_MAX_AGE_SECONDS) {
+      return { ok: false, error: "vk_launch_params_expired" };
+    }
+  }
+
+  const dataCheckString = Array.from(params.entries())
+    .filter(([key]) => key.startsWith("vk_"))
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, value]) => `${key}=${value}`)
+    .join("&");
+
+  if (!dataCheckString) return { ok: false, error: "vk_launch_params_required" };
+
+  const expected = toBase64Url(crypto.createHmac("sha256", APP_SECRET).update(dataCheckString).digest());
+  return timingSafeEqual(sign, expected) ? { ok: true } : { ok: false, error: "vk_launch_params_invalid" };
+}
+
+function parseLaunchParams(rawLaunchParams) {
+  const value = String(rawLaunchParams || "").replace(/^[?#]/, "");
+  return new URLSearchParams(value);
+}
+
+function toBase64Url(buffer) {
+  return Buffer.from(buffer)
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
+}
+
+function timingSafeEqual(left, right) {
+  const leftBuffer = Buffer.from(String(left));
+  const rightBuffer = Buffer.from(String(right));
+  return leftBuffer.length === rightBuffer.length && crypto.timingSafeEqual(leftBuffer, rightBuffer);
+}
+
 function parseWallUrl(url) {
   if (!url) return null;
   const match = String(url).match(/wall(-?\d+)_([0-9]+)/i);
@@ -757,8 +1020,19 @@ function sendJson(res, status, payload) {
   res.writeHead(status, {
     "content-type": "application/json;charset=utf-8",
     "access-control-allow-origin": "*",
+    "access-control-allow-methods": "GET,POST,OPTIONS",
+    "access-control-allow-headers": "content-type",
   });
   res.end(JSON.stringify(payload, null, 2));
+}
+
+function sendOptions(res) {
+  res.writeHead(204, {
+    "access-control-allow-origin": "*",
+    "access-control-allow-methods": "GET,POST,OPTIONS",
+    "access-control-allow-headers": "content-type",
+  });
+  res.end();
 }
 
 function sendText(res, status, text) {

@@ -1,141 +1,75 @@
-# Подведение итогов VK
+# VK Winner Mini App
 
-Мини-приложение для прозрачного подведения итогов конкурсов во ВКонтакте.
+Мини-приложение для подведения итогов конкурсов VK.
 
-Что умеет:
+## Что делает
 
-- условия участия: `репост`, `комментарий`, `лайк`, `все вместе`
-- признак закрепленного поста
-- несколько победителей
-- антифрод-фильтры против призоловов
-- живой импорт участников из VK API через локальный proxy
-- отчет в `TXT`, `JSON` и `PNG`
-- PNG-отчет включает фильтры, seed, победителей, `id` и фото профиля
+- импортирует участников из VK API;
+- проверяет репост, комментарий, лайк;
+- выбирает одного или нескольких победителей;
+- поддерживает призы по местам;
+- экспортирует текст и PNG с итогами.
+
+## Backend
+
+Backend уже встроен в `server.js`.
+
+Он нужен, чтобы не хранить токены и важную логику во frontend. Сам HTML/JS все равно скачивается браузером, но без backend он остается только оболочкой.
+
+Защита включается через `VK_APP_SECRET`: тогда `/api/import` и `/api/enrich` принимают запросы только с валидными VK launch params.
 
 ## Локальный запуск
 
-Проект запускается без сборщика.
-
-1. Заполни переменные окружения в `.env.example` или задай их в PowerShell:
-
 ```powershell
-$env:VK_USER_TOKEN="..."
-$env:VK_SERVICE_TOKEN="..."
-$env:VK_API_VERSION="5.199"
-$env:VK_IMPORT_SCAN_DEPTH="60"
-```
-
-2. Подними сервер:
-
-```powershell
-cd "D:\Рабочие программы\Подведения итогов вк\vk-winner-mini-app"
+copy .env.example .env.local
 node server.js
 ```
 
-3. Открой:
+Открыть:
 
 ```text
-http://localhost:4173
+http://127.0.0.1:4173
 ```
 
-## Живой импорт
+## Переменные окружения
 
-Кнопка `Импортировать из VK` работает через локальный proxy `/api/import`.
-
-Как это устроено:
-
-- браузер отправляет только ссылку на пост и выбранные режимы
-- сервер ходит в VK API с токенами из окружения
-- сервер возвращает уже готовый JSON со списком участников
-- браузер дальше делает фильтрацию и жеребьевку локально
-
-Для фото в PNG сервер также проксирует аватары через `/api/image`, чтобы экспорт не ломался на CORS.
-
-## Что нужно из VK
-
-Для импорт-потока держи токены только на сервере, не в браузере.
-
-Рекомендуется:
-
-- `VK_USER_TOKEN`
-- `VK_SERVICE_TOKEN`
-
-Если есть только один токен, импорт попробует работать с ним.
-
-## Формат участников
-
-Можно вручную вставлять JSON-массив, если не хочешь использовать живой импорт.
-
-```json
-[
-  {
-    "id": 123,
-    "name": "Анна",
-    "profileUrl": "https://vk.com/id123",
-    "avatarUrl": "https://...",
-    "actions": { "repost": true, "comment": true, "like": true },
-    "member": true,
-    "friends": 120,
-    "ageDays": 540,
-    "wallContestCount": 1,
-    "repostShare": 0.12,
-    "isCommunity": false,
-    "isPrivate": false,
-    "bioText": "",
-    "wallText": ""
-  }
-]
+```env
+VK_USER_TOKEN=
+VK_SERVICE_TOKEN=
+VK_APP_SECRET=
+VK_API_VERSION=5.199
+VK_IMPORT_SCAN_DEPTH=60
+VK_IMPORT_MAX_ITEMS=50000
+VK_LAUNCH_MAX_AGE_SECONDS=86400
+PORT=4173
 ```
 
-## Бесплатный запуск
+`VK_SERVICE_TOKEN` и `VK_USER_TOKEN` хранятся только на сервере.
 
-### Вариант 1. Локально
+`VK_APP_SECRET` берется из настроек VK приложения. Не публиковать.
 
-Самый простой путь для первых конкурсов:
+## Отдельный backend-домен
 
-1. Запускаешь `node server.js`.
-2. Открываешь `http://localhost:4173`.
-3. Импортируешь участников через VK API.
+Если frontend лежит на VK Hosting, а backend на другом домене, укажи URL перед `app.js` в `index.html`:
 
-### Вариант 2. Бесплатный статический хостинг
-
-Если нужен только интерфейс без живого импорта:
-
-1. Заливаешь папку `vk-winner-mini-app` в `GitHub Pages` или `Cloudflare Pages`.
-2. Используешь ручной JSON-import.
-
-### Вариант 3. Бесплатный public-host с proxy
-
-Для живого импорта нужен backend. Бесплатный путь:
-
-1. Оставляешь UI как static hosting.
-2. Переносишь `/api/import` и `/api/image` в free serverless, например Cloudflare Pages Functions.
-3. Указываешь тот же фронтенд-URL в VK Mini Apps.
-
-## VK Mini Apps
-
-Для публикации в VK нужны:
-
-- приложение в VK Developer
-- `vk-hosting-config.json`
-- `app_id`
-
-`vk-hosting-config.json.example` уже лежит рядом. Скопируй его в `vk-hosting-config.json` и подставь `app_id`.
-
-## Что уже есть
-
-- seed для повторяемой жеребьевки
-- прозрачный лог причин исключения
-- скачивание отчета в `TXT`, `JSON` и `PNG`
-- карточки победителей с фото и `id`
-- локальное сохранение настроек в `localStorage`
-
-## Полезные команды
-
-```powershell
-# локальный запуск
-node server.js
-
-# если есть npm-пакеты и хочется деплоя в VK hosting
-npx @vkontakte/vk-miniapps-deploy
+```html
+<script>
+  window.VK_WINNER_API_BASE_URL = "https://your-backend.example.com";
+</script>
 ```
+
+Если frontend и backend на одном домене, оставь пустую строку.
+
+## API
+
+- `GET /api/status` - статус токенов и backend.
+- `POST /api/import` - импорт участников.
+- `POST /api/enrich` - серверная допроверка участников.
+- `GET /api/image?url=...` - proxy аватаров для PNG.
+
+## Важно
+
+- frontend нельзя полностью скрыть от скачивания;
+- секреты нельзя класть в `app.js`;
+- важные проверки держать в `server.js`;
+- включить `VK_APP_SECRET` на production.
