@@ -384,6 +384,9 @@ async function buildParticipants({ postUrl, ownerId, postId, selectedModes, requ
       wallText: wallSignals.wallText || "",
     };
   });
+  const totalParticipants = !requireAllActions && selectedModes.length === 1 && selectedModes[0] === "repost" && Number.isFinite(meta.sourceCounts?.repost)
+    ? Math.max(ids.length, meta.sourceCounts.repost)
+    : ids.length;
 
   return {
     participants,
@@ -396,7 +399,7 @@ async function buildParticipants({ postUrl, ownerId, postId, selectedModes, requ
       requireAllActions,
       importedCount: participants.length,
       matchedCount: ids.length,
-      totalParticipants: ids.length,
+      totalParticipants,
       scanDepth,
       strictPrizeHunter,
       serviceTokenUsed: Boolean(SERVICE_TOKEN),

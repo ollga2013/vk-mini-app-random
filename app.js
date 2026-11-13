@@ -632,7 +632,7 @@ async function importFromVk() {
     importedMeta = payload.meta ?? null;
     els.participants.value = JSON.stringify(payload.participants ?? [], null, 2);
     persistAndRefresh();
-    setApiStatus(`Импорт готов · ${payload.participants?.length ?? 0} участников`);
+    setApiStatus(`Импорт готов · ${getImportDisplayCount(payload, state)} участников`);
   } catch (error) {
     if (requestSeq !== importRequestSeq) return;
     console.error("VK import failed", error);
@@ -696,7 +696,7 @@ async function importFromVkFresh() {
     els.participants.value = JSON.stringify(payload.participants ?? [], null, 2);
     persistAndRefresh();
     const note = payload?.meta?.note ? ` · ${payload.meta.note}` : "";
-    setApiStatus(`Импорт готов · ${payload.participants?.length ?? 0} участников${note}`);
+    setApiStatus(`Импорт готов · ${getImportDisplayCount(payload, state)} участников${note}`);
   } catch (error) {
     if (requestSeq !== importRequestSeq) return;
     console.error("VK import failed", error);
@@ -933,6 +933,14 @@ function rewriteApiImageUrls(payload) {
   });
 }
 
+function getImportDisplayCount(payload, state) {
+  const modes = (state?.entryModes || []).filter((mode) => mode !== "all");
+  const repostCount = !state?.requireAllActions && modes.length === 1 && modes[0] === "repost"
+    ? toNum(payload?.meta?.sourceCounts?.repost)
+    : null;
+  return repostCount !== null ? Math.max(repostCount, payload?.participants?.length || 0) : payload?.participants?.length || 0;
+}
+
 async function buildBridgeImportPayload({ state, parsed, actionMap, selectedModes, requireAllActions = false, sourceCounts = {}, userToken }) {
   const ids = Array.from(actionMap.entries())
     .filter(([, flags]) => matchesSelectedActions(flags, selectedModes, requireAllActions))
@@ -981,7 +989,7 @@ async function buildBridgeImportPayload({ state, parsed, actionMap, selectedMode
       ageDays: wallSignals.ageDays ?? null,
       wallContestCount: wallSignals.wallContestCount ?? null,
       repostShare: wallSignals.repostShare ?? null,
-      isCommunity: false,
+      isCommunity: user.isCommunity ?? false,
       isPrivate: wallSignals.isPrivate ?? user.isPrivate ?? false,
       canWritePm: user.canWritePm ?? null,
       commentText: actionMap.get(user.id)?.commentText || "",
@@ -1002,7 +1010,9 @@ async function buildBridgeImportPayload({ state, parsed, actionMap, selectedMode
       importedCount: participants.length,
       matchedCount: ids.length,
       sourceCounts,
-      totalParticipants: ids.length,
+      totalParticipants: !requireAllActions && selectedModes.length === 1 && selectedModes[0] === "repost" && Number.isFinite(sourceCounts.repost)
+        ? Math.max(ids.length, sourceCounts.repost)
+        : ids.length,
       scanDepth: state.importScanDepth,
       clientBridgeImport: true,
       repostImportAvailable: true,
@@ -1803,8 +1813,13 @@ function recompute() {
   const importMeta = state.importMeta || {};
   const importMatchesSelection = importMetaMatchesSelection(importMeta, requiredActions, requireAllActions);
   let totalParticipants;
+  const officialRepostCount = !requireAllActions && requiredActions.length === 1 && requiredActions[0] === "repost"
+    ? toNum(importMeta.sourceCounts?.repost)
+    : null;
   const matchedCount = importMatchesSelection ? toNum(importMeta.matchedCount) : null;
-  if (matchedCount !== null) {
+  if (officialRepostCount !== null) {
+    totalParticipants = Math.max(officialRepostCount, matchedCount ?? 0);
+  } else if (matchedCount !== null) {
     totalParticipants = Math.max(0, matchedCount);
   } else if (importMatchesSelection && importMeta.sourceCounts && Object.keys(importMeta.sourceCounts).length > 0) {
     // Legacy imports: use old source totals only when matchedCount is unavailable.
@@ -1837,12 +1852,21 @@ function recompute() {
 
 function getTotalParticipantsCount(result) {
   const meta = result.importMeta || {};
-  if (importMetaMatchesSelection(meta, result.requiredActions || ["repost"], Boolean(result.requireAllActions)) && toNum(meta.matchedCount) !== null) {
+  const requiredActions = result.requiredActions || ["repost"];
+  const requireAllActions = Boolean(result.requireAllActions);
+  const matchesSelection = importMetaMatchesSelection(meta, requiredActions, requireAllActions);
+  const officialRepostCount = !requireAllActions && requiredActions.length === 1 && requiredActions[0] === "repost"
+    ? toNum(meta.sourceCounts?.repost)
+    : null;
+  if (matchesSelection && officialRepostCount !== null) {
+    return Math.max(officialRepostCount, toNum(meta.matchedCount) ?? 0);
+  }
+  if (matchesSelection && toNum(meta.matchedCount) !== null) {
     return Math.max(0, toNum(meta.matchedCount));
   }
-  if (importMetaMatchesSelection(meta, result.requiredActions || ["repost"], Boolean(result.requireAllActions)) && meta.sourceCounts && Object.keys(meta.sourceCounts).length > 0) {
+  if (matchesSelection && meta.sourceCounts && Object.keys(meta.sourceCounts).length > 0) {
     const minCount = totalFromSourceCounts(meta.sourceCounts, result.participants?.length || 0);
-    return result.requireAllActions ? minCount : result.participants?.filter((item) => matchesSelectedActions(item.actions, result.requiredActions || ["repost"], false)).length || 0;
+    return requireAllActions ? minCount : result.participants?.filter((item) => matchesSelectedActions(item.actions, requiredActions, false)).length || 0;
   }
   if (toNum(meta.totalParticipants) > 0) {
     return toNum(meta.totalParticipants);
